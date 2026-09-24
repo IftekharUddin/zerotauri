@@ -1,0 +1,29 @@
+[package]
+name = "zero-claw-code"
+version = "0.1.0"
+edition = "2024"
+# Let-chains in the config-dir parser need 1.88.
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "Zero Claw-Code: a community desktop coding workspace that drives a ZeroClaw daemon"
+repository = "https://github.com/IftekharUddin/zero-claw-code"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0", features = [] }
+tauri-plugin-dialog = "2.0"
+tauri-plugin-single-instance = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.50", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "process"] }
+anyhow = "1.0"
+
+[dev-dependencies]
+tauri-utils = { version = "2.0", features = ["build-2"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
