@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/config.schema.json",
-  "productName": "Zero Claw-Code",
+  "productName": "ZeroTauri",
   "version": "0.1.0",
-  "identifier": "io.github.iftekharuddin.zeroclawcode",
+  "identifier": "io.github.iftekharuddin.zerotauri",
   "build": {
     "beforeDevCommand": "npm --prefix ui run dev",
     "devUrl": "http://localhost:5178",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Zero Claw-Code",
+        "title": "ZeroTauri",
         "width": 1280,
         "height": 860,
         "minWidth": 720,

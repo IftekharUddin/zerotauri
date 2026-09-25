@@ -438,7 +438,7 @@ export default function App() {
         >
           ☰
         </button>
-        <span className="title">Zero Claw-Code</span>
+        <span className="title">ZeroTauri</span>
         {session && (
           <span className="chip" title={session.workspaceDir}>
             <span className="path">{shortPath(session.workspaceDir)}</span>

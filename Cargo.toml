@@ -1,12 +1,12 @@
 [package]
-name = "zero-claw-code"
+name = "zerotauri"
 version = "0.1.0"
 edition = "2024"
 # Let-chains in the config-dir parser need 1.88.
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
-description = "Zero Claw-Code: a community desktop coding workspace that drives a ZeroClaw daemon"
-repository = "https://github.com/IftekharUddin/zero-claw-code"
+description = "ZeroTauri: a Tauri desktop GUI wrapper for a ZeroClaw daemon"
+repository = "https://github.com/IftekharUddin/zerotauri"
 publish = false
 
 [build-dependencies]

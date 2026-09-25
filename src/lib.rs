@@ -1,4 +1,4 @@
-//! Zero Claw-Code: a community desktop coding workspace for a ZeroClaw daemon.
+//! ZeroTauri: a Tauri desktop GUI wrapper for a ZeroClaw daemon.
 //!
 //! The app is an RPC-only client of the ZeroClaw daemon. It links no
 //! `zeroclaw-*` crate, owns no agent execution, and cannot approve a tool
@@ -47,5 +47,5 @@ pub fn run() {
             commands::session::git_branch,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Zero Claw-Code");
+        .expect("error while running ZeroTauri");
 }

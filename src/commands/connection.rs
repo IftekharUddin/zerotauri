@@ -71,7 +71,7 @@ pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
 #[tauri::command]
 pub async fn daemon_stop_owned(state: State<'_, AppState>) -> Result<bool, String> {
     let Some(pid) = state.owned_pid().await else {
-        return Err("this daemon was already running; Zero Claw-Code will not stop it".into());
+        return Err("this daemon was already running; ZeroTauri will not stop it".into());
     };
     spawn::stop_owned(pid).map_err(|e| e.to_string())?;
     Ok(true)

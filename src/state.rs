@@ -172,7 +172,7 @@ pub async fn establish(app: &AppHandle, allow_spawn: bool) -> anyhow::Result<Con
         .path()
         .app_log_dir()
         .unwrap_or_else(|_| std::env::temp_dir())
-        .join("zero-claw-code-daemon.log");
+        .join("zerotauri-daemon.log");
 
     let pid = spawn::spawn_ephemeral(&binary, &state.config_dir, &state.endpoint, &log)?;
     *state.owned_pid.lock().await = Some(pid);

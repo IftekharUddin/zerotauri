@@ -328,7 +328,7 @@ async fn route_frame(
                 "id": id,
                 "error": {
                     "code": error_code::METHOD_NOT_FOUND,
-                    "message": "Zero Claw-Code does not handle daemon-initiated requests yet",
+                    "message": "ZeroTauri does not handle daemon-initiated requests yet",
                 },
             });
             let _ = tx.send(reply.to_string());

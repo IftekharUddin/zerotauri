@@ -1,9 +1,9 @@
-# Zero Claw-Code: design and delivery plan
+# ZeroTauri: design and delivery plan
 
 > This document was written as an in-tree plan for the ZeroClaw repository,
 > under the working name "ZeroClaw Code", against master `46479bdca7`. The
 > maintainers chose not to take on another UI, so the app now lives here as
-> Zero Claw-Code. Sections 7.1, 7.9, 10, and 11 describe in-tree mechanics
+> ZeroTauri, a Tauri GUI wrapper for the daemon. Sections 7.1, 7.9, 10, and 11 describe in-tree mechanics
 > (workspace membership, that repository's CI gates, install script, labels)
 > that no longer apply. Sections 3 to 5 remain an accurate description of the
 > daemon contract, and section 8 remains the list of daemon-side changes to
