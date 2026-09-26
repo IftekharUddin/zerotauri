@@ -93,3 +93,68 @@ export type SessionUpdate =
   | { type: string; session_id: string }
 
 export type ApprovalDecision = 'allow_once' | 'allow_always' | 'reject' | 'reject_with_edit'
+
+/**
+ * Session settings kept by the daemon for one live session. `null` is unset,
+ * which means the agent's configured value applies. `mode` and the thinking
+ * fields exist only on daemons that support them; others never echo them.
+ */
+export interface SessionOverrides {
+  model: string | null
+  modelProvider: string | null
+  temperature: number | null
+  mode: string | null
+  thinkingLevel: string | null
+  thinkingDisplay: string | null
+}
+
+/** A `session/configure` request names only the fields it changes. */
+export type OverridePatch = Partial<SessionOverrides>
+
+/** What the session's model accepts for reasoning depth and display. */
+export interface ThinkingOptions {
+  modelProvider: string
+  model: string
+  levels: string[]
+  displays: string[]
+  currentLevel: string | null
+  /** `session`, `profile`, or `model_default`. */
+  levelSource: string | null
+  currentDisplay: string | null
+  /** `session`, `alias`, `profile`, or `model_default`. */
+  displaySource: string | null
+}
+
+export interface Configured {
+  sessionId: string
+  /** The merged set the daemon kept. */
+  overrides: SessionOverrides
+  thinkingOptions: ThinkingOptions | null
+  /** Wire names of requested fields the daemon ignored as unknown. */
+  droppedFields: string[]
+}
+
+export interface SessionSettings {
+  overrides: SessionOverrides
+  thinkingOptions: ThinkingOptions | null
+}
+
+export interface ModelCatalog {
+  modelProvider: string
+  models: string[]
+  local: boolean
+  live: boolean
+}
+
+/** The provider and model a session runs on, as far as the app can tell. */
+export interface Identity {
+  provider: string | null
+  model: string | null
+}
+
+/** The structured error the session-settings commands reject with. */
+export interface RpcFailure {
+  code: number
+  message: string
+  userMessage: string
+}

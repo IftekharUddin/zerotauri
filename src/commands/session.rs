@@ -8,9 +8,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::State;
 
+use super::RpcFailure;
+use crate::rpc::client::DaemonClient;
 use crate::rpc::wire::{
-    ApprovalDecision, MessageEntry, SessionEntry, SessionGitBranchResult, SessionListResult,
-    SessionMessagesResult, SessionNewParams, SessionNewResult, SessionStateResult, method,
+    ApprovalDecision, CatalogModelsResult, ConfigListResult, MessageEntry, QuickstartStateResult,
+    SessionConfigureParams, SessionEntry, SessionGitBranchResult, SessionListResult,
+    SessionMessagesResult, SessionNewParams, SessionNewResult, SessionOverrides,
+    SessionSettingsResult, SessionStateResult, ThinkingOptions, dropped_override_fields,
+    error_code, method,
 };
 use crate::state::AppState;
 
@@ -292,10 +297,311 @@ pub async fn git_branch(
     Ok(GitBranch { branch, hash })
 }
 
+/// Session settings as the webview sees them: [`SessionOverrides`] with the
+/// IPC's camelCase names. `None` is an unset field in both directions.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Overrides {
+    pub model: Option<String>,
+    pub model_provider: Option<String>,
+    pub temperature: Option<f64>,
+    pub mode: Option<String>,
+    pub thinking_level: Option<String>,
+    pub thinking_display: Option<String>,
+}
+
+impl From<Overrides> for SessionOverrides {
+    fn from(o: Overrides) -> Self {
+        Self {
+            model: o.model,
+            model_provider: o.model_provider,
+            temperature: o.temperature,
+            mode: o.mode,
+            thinking_level: o.thinking_level,
+            thinking_display: o.thinking_display,
+        }
+    }
+}
+
+impl From<SessionOverrides> for Overrides {
+    fn from(o: SessionOverrides) -> Self {
+        Self {
+            model: o.model,
+            model_provider: o.model_provider,
+            temperature: o.temperature,
+            mode: o.mode,
+            thinking_level: o.thinking_level,
+            thinking_display: o.thinking_display,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThinkingReport {
+    pub model_provider: String,
+    pub model: String,
+    pub levels: Vec<String>,
+    pub displays: Vec<String>,
+    pub current_level: Option<String>,
+    pub level_source: Option<String>,
+    pub current_display: Option<String>,
+    pub display_source: Option<String>,
+}
+
+impl From<ThinkingOptions> for ThinkingReport {
+    fn from(o: ThinkingOptions) -> Self {
+        Self {
+            model_provider: o.model_provider,
+            model: o.model,
+            levels: o.levels,
+            displays: o.displays,
+            current_level: o.current_level,
+            level_source: o.level_source,
+            current_display: o.current_display,
+            display_source: o.display_source,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigureRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub overrides: Overrides,
+    /// Thinking fields to clear first. Only daemons with thinking controls
+    /// accept it; the UI sends it only to those.
+    #[serde(default)]
+    pub reset: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Configured {
+    pub session_id: String,
+    /// The merged set the daemon kept, not just what was sent.
+    pub overrides: Overrides,
+    pub thinking_options: Option<ThinkingReport>,
+    /// Wire names of requested fields the daemon ignored because it does not
+    /// know them. `mode` here means the daemon does not enforce plan mode.
+    pub dropped_fields: Vec<String>,
+}
+
+/// Change this session's settings. The daemon keeps them in memory only, so
+/// they last until the daemon restarts or drops the session.
+#[tauri::command]
+pub async fn session_configure(
+    state: State<'_, AppState>,
+    request: ConfigureRequest,
+) -> Result<Configured, RpcFailure> {
+    let client = state.client().await?;
+    if !client.supports(method::SESSION_CONFIGURE) {
+        return Err(RpcFailure::local(
+            error_code::METHOD_NOT_FOUND,
+            "This daemon cannot change session settings.",
+        ));
+    }
+    let requested: SessionOverrides = request.overrides.into();
+    let params = SessionConfigureParams {
+        session_id: request.session_id.clone(),
+        overrides: requested.clone(),
+        reset: request.reset,
+    };
+    let value = serde_json::to_value(params)
+        .map_err(|e| RpcFailure::local(error_code::INTERNAL_ERROR, e.to_string()))?;
+    let echoed = client.request(method::SESSION_CONFIGURE, value).await?;
+    let result: SessionSettingsResult = serde_json::from_value(echoed)
+        .map_err(|e| RpcFailure::local(error_code::INTERNAL_ERROR, e.to_string()))?;
+
+    let dropped_fields = dropped_override_fields(&requested, &result.overrides)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    Ok(Configured {
+        session_id: if result.session_id.is_empty() {
+            request.session_id
+        } else {
+            result.session_id
+        },
+        overrides: result.overrides.into(),
+        thinking_options: result.thinking_options.map(Into::into),
+        dropped_fields,
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSettings {
+    pub overrides: Overrides,
+    pub thinking_options: Option<ThinkingReport>,
+}
+
+/// The session's current settings and what its model accepts for thinking.
+/// `None` on a daemon without per-session thinking controls, which is also
+/// the only daemon that has no read-only way to report its overrides.
+#[tauri::command]
+pub async fn session_thinking_options(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<SessionSettings>, RpcFailure> {
+    let client = state.client().await?;
+    if !client.supports(method::SESSION_THINKING_OPTIONS) {
+        return Ok(None);
+    }
+    match client
+        .request(
+            method::SESSION_THINKING_OPTIONS,
+            json!({ "session_id": session_id }),
+        )
+        .await
+    {
+        Ok(value) => {
+            let parsed: SessionSettingsResult = serde_json::from_value(value)
+                .map_err(|e| RpcFailure::local(error_code::INTERNAL_ERROR, e.to_string()))?;
+            Ok(Some(SessionSettings {
+                overrides: parsed.overrides.into(),
+                thinking_options: parsed.thinking_options.map(Into::into),
+            }))
+        }
+        // A daemon that predates capability reporting offers every method
+        // and refuses the call instead.
+        Err(e) if e.code == error_code::METHOD_NOT_FOUND => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCatalog {
+    pub model_provider: String,
+    pub models: Vec<String>,
+    /// True when the provider runs locally.
+    pub local: bool,
+    /// True when the list came from the provider rather than a built-in
+    /// catalogue.
+    pub live: bool,
+}
+
+/// Models the daemon knows for a provider reference. The daemon does not
+/// check a model id against this list, so the UI also accepts a typed id.
+#[tauri::command]
+pub async fn catalog_models(
+    state: State<'_, AppState>,
+    model_provider: String,
+) -> Result<ModelCatalog, String> {
+    let client = state.client().await.map_err(|e| e.user_message())?;
+    if !client.supports(method::CONFIG_CATALOG_MODELS) {
+        return Err("This daemon cannot list models.".into());
+    }
+    let value = client
+        .request(
+            method::CONFIG_CATALOG_MODELS,
+            json!({ "model_provider": model_provider }),
+        )
+        .await
+        .map_err(|e| e.user_message())?;
+    let parsed: CatalogModelsResult = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    Ok(ModelCatalog {
+        model_provider: if parsed.model_provider.is_empty() {
+            model_provider
+        } else {
+            parsed.model_provider
+        },
+        models: parsed.models,
+        local: parsed.local,
+        live: parsed.live,
+    })
+}
+
+/// Configured provider references (`<provider_type>.<alias>`).
+#[tauri::command]
+pub async fn model_providers(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let client = state.client().await.map_err(|e| e.user_message())?;
+    if !client.supports(method::QUICKSTART_STATE) {
+        return Err("This daemon cannot list its providers.".into());
+    }
+    let value = client
+        .request(method::QUICKSTART_STATE, json!({}))
+        .await
+        .map_err(|e| e.user_message())?;
+    let parsed: QuickstartStateResult = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    Ok(parsed.model_providers)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityRequest {
+    pub agent_alias: String,
+    /// Read this provider's configured model instead of the agent's
+    /// provider. Used after a provider switch that named no model.
+    #[serde(default)]
+    pub model_provider: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Identity {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+}
+
+/// The provider and model a session runs on when it has no override, read
+/// from the daemon's config. The daemon does not report a session's
+/// effective model, so this is the same two-step read zerocode makes.
+/// Display only: every failure reads as "unknown".
+#[tauri::command]
+pub async fn session_identity(
+    state: State<'_, AppState>,
+    request: IdentityRequest,
+) -> Result<Identity, String> {
+    let client = state.client().await.map_err(|e| e.user_message())?;
+    if !client.supports(method::CONFIG_LIST) {
+        return Ok(Identity::default());
+    }
+    let provider = match request
+        .model_provider
+        .filter(|reference| !reference.trim().is_empty())
+    {
+        Some(reference) => Some(reference),
+        None => {
+            config_string_inner(
+                &client,
+                &format!("agents.{}.model_provider", request.agent_alias),
+            )
+            .await
+        }
+    };
+    let model = match provider.as_deref() {
+        Some(reference) => {
+            config_string_inner(&client, &format!("providers.models.{reference}.model")).await
+        }
+        None => None,
+    };
+    Ok(Identity { provider, model })
+}
+
+/// One string value from `config/list`. Missing, unset, blank, or non-string
+/// values read as `None`.
+async fn config_string_inner(client: &DaemonClient, prop: &str) -> Option<String> {
+    let value = client
+        .request(method::CONFIG_LIST, json!({ "prefix": prop }))
+        .await
+        .ok()?;
+    let parsed: ConfigListResult = serde_json::from_value(value).ok()?;
+    parsed
+        .entries
+        .into_iter()
+        .find(|entry| entry.path == prop)
+        .and_then(|entry| entry.value)
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .filter(|text| !text.trim().is_empty())
+}
+
 /// Branch lookup never fails the caller: a workspace outside a repository is
 /// an ordinary state, not an error.
 async fn git_branch_inner(
-    client: &crate::rpc::client::DaemonClient,
+    client: &DaemonClient,
     session_id: &str,
 ) -> (Option<String>, Option<String>) {
     if !client.supports(method::SESSION_GIT_BRANCH) {
@@ -318,7 +624,7 @@ async fn git_branch_inner(
 
 /// Live state lookup degrades to `idle` rather than failing the open.
 async fn session_state_inner(
-    client: &crate::rpc::client::DaemonClient,
+    client: &DaemonClient,
     session_id: &str,
 ) -> (String, Option<Vec<Value>>) {
     if !client.supports(method::SESSION_STATE) {
@@ -333,5 +639,54 @@ async fn session_state_inner(
             Err(_) => ("idle".into(), None),
         },
         Err(_) => ("idle".into(), None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipc_overrides_use_camel_case_and_map_onto_the_wire_names() {
+        let from_ui: Overrides = serde_json::from_value(serde_json::json!({
+            "modelProvider": "anthropic.default",
+            "thinkingLevel": "high"
+        }))
+        .expect("parse");
+        let wire = serde_json::to_value(SessionOverrides::from(from_ui)).expect("serialize");
+        assert_eq!(
+            wire,
+            serde_json::json!({"model_provider": "anthropic.default", "thinking_level": "high"})
+        );
+    }
+
+    #[test]
+    fn an_echo_reaches_the_ui_with_every_field_present() {
+        let echo = SessionOverrides {
+            model: Some("m1".into()),
+            ..SessionOverrides::default()
+        };
+        let value = serde_json::to_value(Overrides::from(echo)).expect("serialize");
+        assert_eq!(value["model"], "m1");
+        // Unset fields are explicit nulls so the UI never sees `undefined`.
+        for key in [
+            "modelProvider",
+            "temperature",
+            "mode",
+            "thinkingLevel",
+            "thinkingDisplay",
+        ] {
+            assert!(value[key].is_null(), "{key} should be null");
+            assert!(value.get(key).is_some(), "{key} should be present");
+        }
+    }
+
+    #[test]
+    fn a_configure_request_without_reset_or_overrides_still_parses() {
+        let request: ConfigureRequest =
+            serde_json::from_value(serde_json::json!({"sessionId": "s1"})).expect("parse");
+        assert_eq!(request.session_id, "s1");
+        assert!(request.reset.is_empty());
+        assert_eq!(request.overrides, Overrides::default());
     }
 }

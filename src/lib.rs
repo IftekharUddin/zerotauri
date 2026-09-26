@@ -45,6 +45,11 @@ pub fn run() {
             commands::session::session_state,
             commands::session::session_messages,
             commands::session::git_branch,
+            commands::session::session_configure,
+            commands::session::session_thinking_options,
+            commands::session::catalog_models,
+            commands::session::model_providers,
+            commands::session::session_identity,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ZeroTauri");

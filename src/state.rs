@@ -118,6 +118,11 @@ fn build_info(
         wire::method::SESSION_STATE,
         wire::method::SESSION_APPROVE,
         wire::method::SESSION_CANCEL,
+        wire::method::SESSION_CONFIGURE,
+        wire::method::SESSION_THINKING_OPTIONS,
+        wire::method::CONFIG_CATALOG_MODELS,
+        wire::method::CONFIG_LIST,
+        wire::method::QUICKSTART_STATE,
     ];
     let missing_methods = wanted
         .iter()
