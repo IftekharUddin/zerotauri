@@ -129,7 +129,10 @@ export default function App() {
   const draftRef = useRef('')
   draftRef.current = draft
   const pickerSeq = useRef(0)
+  // A depth, not a flag: two restores can overlap when sessions are switched
+  // quickly, and the first one ending must not unblock sending for the second.
   const configuringRef = useRef(false)
+  const configuringDepth = useRef(0)
   const caps = useMemo(() => deriveCaps(info), [info])
   const capsRef = useRef<Caps>(caps)
   capsRef.current = caps
@@ -375,9 +378,19 @@ export default function App() {
           opened.messages,
         )
         const endpoint = infoRef.current?.endpoint
-        const saved =
+        const stored =
           request.sessionId && endpoint ? loadSettings(store, endpoint, opened.sessionId) : null
+        // Plan mode is a restriction and comes back on its own. Goal mode
+        // arms an autonomous loop on the next message, so a session last used
+        // that way opens in build mode and says so; Shift+Tab goes back.
+        const saved = stored?.mode === 'goal' ? { ...stored, mode: 'build' as const } : stored
         install(next)
+        if (stored?.mode === 'goal') {
+          notify(
+            next.sessionId,
+            'This session was last in goal mode. It opens in build mode; press Shift+Tab to go back to goal.',
+          )
+        }
         const running = opened.state === 'running'
         if (running) setRecovery(opened.sessionId)
         void restoreRef.current(next, saved, running)
@@ -388,7 +401,7 @@ export default function App() {
         setOpening(false)
       }
     },
-    [install, refreshSessions, store],
+    [install, notify, refreshSessions, store],
   )
 
   /**
@@ -472,8 +485,10 @@ export default function App() {
   }, [])
 
   const setConfiguringFlag = useCallback((value: boolean) => {
-    configuringRef.current = value
-    setConfiguring(value)
+    configuringDepth.current = Math.max(0, configuringDepth.current + (value ? 1 : -1))
+    const active = configuringDepth.current > 0
+    configuringRef.current = active
+    setConfiguring(active)
   }, [])
 
   /**
@@ -632,6 +647,9 @@ export default function App() {
         return true
       }
       if (next === 'plan' && (!capsRef.current.configure || planSupportRef.current === 'unsupported')) {
+        // Without session/configure there is no way to ask, so plan leaves
+        // the cycle rather than stopping it at this step every time.
+        updatePlanSupport('unsupported')
         notify(sessionId, PLAN_UNSUPPORTED, 'warn')
         return false
       }
@@ -649,6 +667,15 @@ export default function App() {
             notify(sessionId, PLAN_UNSUPPORTED, 'warn')
             return false
           }
+        } else if (result.overrides.mode !== requested.mode) {
+          // The daemon answered with some other mode. Whatever it is running,
+          // the UI must not claim a restriction the daemon did not confirm.
+          notify(
+            sessionId,
+            `The daemon left this session in ${result.overrides.mode ?? 'its current'} mode instead of ${requested.mode}. Nothing changed here.`,
+            'warn',
+          )
+          return false
         } else {
           updatePlanSupport('supported')
         }
@@ -712,7 +739,7 @@ export default function App() {
             const result = await ipc.sessionConfigure({ sessionId, overrides: patch })
             mutate((s) => applyConfigureEcho(s, patch, result))
             persist(sessionId, settingsFromOverrides(result.overrides))
-            notify(sessionId, describeRestore(patch))
+            notify(sessionId, describeRestore(patch, result.droppedFields), result.droppedFields.length ? 'warn' : 'info')
           }
         } catch (e) {
           notify(sessionId, `Could not restore this session's saved settings. ${configureFailureText(e)}`, 'warn')
@@ -1046,10 +1073,22 @@ export default function App() {
     let body = parsed.kind === 'text' ? parsed.text : parsed.rest
     let prefix = ''
     if (parsed.kind === 'inline-effort') {
-      if (!capsRef.current.thinkingOptions) {
+      // Gated on the thinking report, not on the capability list: a daemon
+      // that never answered session/thinking-options would hand the prefix
+      // to the model as text.
+      const report = current.thinking
+      if (!report || !effortAdjustable(current)) {
         notify(
           current.sessionId,
-          'This daemon has no per-message effort control, so nothing was sent. Remove the /effort: prefix, or use a daemon with per-session thinking controls.',
+          `${effortUnavailable(current, capsRef.current)} Nothing was sent; remove the /effort: prefix to send the message as it is.`,
+          'warn',
+        )
+        return
+      }
+      if (!report.levels.includes(parsed.level)) {
+        notify(
+          current.sessionId,
+          `${report.model || 'This model'} accepts /effort:${report.levels.join(', /effort:')}. Nothing was sent.`,
           'warn',
         )
         return

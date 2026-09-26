@@ -198,15 +198,43 @@ export function patchMatches(patch: OverridePatch, overrides: SessionOverrides):
   )
 }
 
-/** The transcript line recorded after a re-apply. */
-export function describeRestore(patch: OverridePatch): string {
-  const parts: string[] = []
-  if (patch.modelProvider) parts.push(`provider ${patch.modelProvider}`)
-  if (patch.model) parts.push(`model ${patch.model}`)
-  if (patch.temperature != null) parts.push(`temperature ${patch.temperature}`)
-  if (patch.thinkingLevel) parts.push(`effort ${patch.thinkingLevel}`)
-  if (patch.thinkingDisplay) parts.push(`thinking display ${patch.thinkingDisplay}`)
-  return `Restored this session's settings: ${parts.join(', ')}.`
+const WIRE_NAME: Record<keyof OverridePatch, string> = {
+  model: 'model',
+  modelProvider: 'model_provider',
+  temperature: 'temperature',
+  mode: 'mode',
+  thinkingLevel: 'thinking_level',
+  thinkingDisplay: 'thinking_display',
+}
+
+const WORDS: Record<keyof OverridePatch, string> = {
+  model: 'model',
+  modelProvider: 'provider',
+  temperature: 'temperature',
+  mode: 'mode',
+  thinkingLevel: 'effort',
+  thinkingDisplay: 'thinking display',
+}
+
+/**
+ * The transcript line recorded after a re-apply. It reports what the daemon
+ * kept and names what it ignored, so the line never claims a setting the
+ * daemon does not have.
+ */
+export function describeRestore(patch: OverridePatch, dropped: readonly string[] = []): string {
+  const kept: string[] = []
+  const ignored: string[] = []
+  for (const key of Object.keys(patch) as (keyof OverridePatch)[]) {
+    const value = patch[key]
+    if (value === undefined || value === null) continue
+    const text = `${WORDS[key]} ${value}`
+    if (dropped.includes(WIRE_NAME[key])) ignored.push(text)
+    else kept.push(text)
+  }
+  const head = kept.length
+    ? `Restored this session's settings: ${kept.join(', ')}.`
+    : "None of this session's saved settings could be restored."
+  return ignored.length ? `${head} This daemon ignored: ${ignored.join(', ')}.` : head
 }
 
 /** `localStorage` behind the `Store` interface, or `null` where it is unavailable. */

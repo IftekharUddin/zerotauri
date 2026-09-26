@@ -172,10 +172,13 @@ turn runs, and sending waits until the daemon confirms a change.
 
 The daemon keeps session settings in memory, so a daemon restart forgets
 them. ZeroTauri remembers what the daemon last confirmed for each session and
-sends it again when you reopen the session or the connection comes back. The
-settings are kept in the app's local storage, keyed by daemon socket and
-session id, and dropped after 90 days unused. `/forget`, or "Forget this
-session's saved settings" in the palette, clears them for one session.
+sends it again when you reopen the session or the connection comes back. Plan
+mode comes back the same way. Goal mode does not, because it starts an
+autonomous loop on your next message: a session last used in goal mode opens
+in build mode and says so. The settings are kept in the app's local storage,
+keyed by daemon socket and session id, and dropped after 90 days unused.
+`/forget`, or "Forget this session's saved settings" in the palette, clears
+them for one session.
 
 If zerocode changes the same live session, the last client to change it wins,
 and this window's pills stay stale until you reopen the session.

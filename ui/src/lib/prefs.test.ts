@@ -156,3 +156,14 @@ test('a patch the daemon already holds is recognised, and restores read in words
     "Restored this session's settings: provider anthropic.default, model m1, effort high.",
   )
 })
+
+test('a restore notice never claims a setting the daemon dropped', () => {
+  assert.equal(
+    describeRestore({ model: 'm1', thinkingLevel: 'high' }, ['thinking_level']),
+    "Restored this session's settings: model m1. This daemon ignored: effort high.",
+  )
+  assert.equal(
+    describeRestore({ thinkingLevel: 'high' }, ['thinking_level']),
+    "None of this session's saved settings could be restored. This daemon ignored: effort high.",
+  )
+})
