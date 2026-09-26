@@ -18,6 +18,7 @@ import {
   modeChangeNeedsDaemon,
   modeNotice,
   nextMode,
+  parseMode,
   wireMode,
   type Mode,
   type PlanSupport,
@@ -46,6 +47,7 @@ import {
   type SavedSettings,
   type SettingsChange,
 } from './lib/prefs'
+import { helpText, parseInput, statusText } from './lib/slash'
 import {
   applyUpdate,
   beginGoal,
@@ -127,6 +129,8 @@ export default function App() {
   const planSupportRef = useRef<PlanSupport>('unknown')
   const infoRef = useRef(info)
   infoRef.current = info
+  const agentsRef = useRef(agents)
+  agentsRef.current = agents
   const store = useMemo(() => browserStore(), [])
   // Assigned once `restoreSettings` exists; opening and reconnecting call it.
   const restoreRef = useRef<
@@ -399,20 +403,6 @@ export default function App() {
     [install, mutate],
   )
 
-  const send = useCallback(() => {
-    const current = sessionRef.current
-    const text = draftRef.current.trim()
-    if (!current || !text || isBusy(current) || configuringRef.current) return
-    // A goal between turns is about to send its own continuation.
-    if (current.goal) return
-    if (current.mode === 'goal') {
-      const step = beginGoal(current, text)
-      submit(step.state, step.sent, true)
-      return
-    }
-    submit(startTurn(current, text), text, true)
-  }, [submit])
-
   const cancel = useCallback(() => {
     const current = sessionRef.current
     if (!current || !isBusy(current)) return
@@ -583,6 +573,31 @@ export default function App() {
     [configure, loadIdentity, openModelPicker],
   )
 
+  const openProviderPicker = useCallback(() => {
+    const current = settingsTarget()
+    if (!current || !capsRef.current.providers) return
+    const active = effectiveIdentity(current).provider
+    const token = openPicker({
+      title: 'Provider',
+      placeholder: 'Search configured providers',
+      loading: true,
+    })
+    ipc.modelProviders().then(
+      (references) =>
+        fillPicker(token, {
+          loading: false,
+          note: references.length === 0 ? 'This daemon has no configured providers.' : null,
+          actions: references.map((reference) => ({
+            id: `provider:${reference}`,
+            label: reference,
+            hint: reference === active ? 'current' : undefined,
+            run: () => void chooseProvider(reference),
+          })),
+        }),
+      (e) => fillPicker(token, { loading: false, note: `Could not list providers: ${failureText(e)}` }),
+    )
+  }, [chooseProvider, fillPicker, openPicker, settingsTarget])
+
   /**
    * Switch mode. Only a change between plan and anything else reaches the
    * daemon, and the mode changes here only once the daemon confirms it, so
@@ -711,6 +726,54 @@ export default function App() {
   )
   restoreRef.current = restoreSettings
 
+  const openAgent = useCallback(
+    (alias: string) => {
+      const current = sessionRef.current
+      if (!current) return
+      const agent = agentsRef.current.find((a) => a.alias.toLowerCase() === alias.toLowerCase())
+      if (!agent) {
+        notify(current.sessionId, `No enabled agent is called ${alias}.`, 'warn')
+        return
+      }
+      // A session keeps its agent for life, so another agent means another
+      // session. This one stays on the daemon and in the rail.
+      void openSession({ agentAlias: agent.alias, cwd: current.workspaceDir })
+    },
+    [notify, openSession],
+  )
+
+  const openAgentPicker = useCallback(() => {
+    const current = sessionRef.current
+    if (!current) return
+    openPicker({
+      title: `Agent for a new session in ${shortPath(current.workspaceDir)}`,
+      placeholder: 'Search enabled agents',
+      note: agentsRef.current.length === 0 ? 'This daemon has no enabled agents.' : null,
+      actions: agentsRef.current.map((agent) => ({
+        id: `agent:${agent.alias}`,
+        label: agent.alias,
+        hint: agent.alias === current.agentAlias ? 'this session' : undefined,
+        run: () => openAgent(agent.alias),
+      })),
+    })
+  }, [openAgent, openPicker])
+
+  /** `/goal <objective>`: switch to goal mode and start it in one step. */
+  const startGoalWith = useCallback(
+    async (objective: string) => {
+      if (!(await setMode('goal'))) return
+      const current = sessionRef.current
+      if (!current || current.mode !== 'goal') return
+      if (isBusy(current) || current.goal) {
+        notify(current.sessionId, 'A goal is already running.', 'warn')
+        return
+      }
+      const step = beginGoal(current, objective)
+      submit(step.state, step.sent, false)
+    },
+    [notify, setMode, submit],
+  )
+
   const forgetSaved = useCallback(() => {
     const current = sessionRef.current
     const endpoint = infoRef.current?.endpoint
@@ -721,6 +784,128 @@ export default function App() {
       "Forgot this session's saved settings. The daemon keeps its current ones until it restarts or drops the session.",
     )
   }, [notify, store])
+
+  /**
+   * Run a slash command. Returns false when it could not run as typed, so
+   * the draft is kept for fixing. Commands do their own busy checks, which
+   * is what lets /cancel and /status work while a turn runs.
+   */
+  const runCommand = useCallback(
+    (name: string, arg: string): boolean => {
+      const current = sessionRef.current
+      if (!current) return false
+      const id = current.sessionId
+      switch (name) {
+        case 'help':
+          notify(id, helpText())
+          return true
+        case 'status':
+          notify(id, statusText(current, infoRef.current, planSupportRef.current))
+          return true
+        case 'mode': {
+          const mode = parseMode(arg)
+          if (!mode) {
+            notify(id, 'Usage: /mode build, /mode plan, or /mode goal.', 'warn')
+            return false
+          }
+          void setMode(mode)
+          return true
+        }
+        case 'build':
+        case 'plan':
+          void setMode(name)
+          return true
+        case 'goal':
+          if (arg) void startGoalWith(arg)
+          else void setMode('goal')
+          return true
+        case 'model':
+          if (arg) void configure({ model: arg })
+          else openModelPicker()
+          return true
+        case 'provider':
+          if (arg) void chooseProvider(arg)
+          else openProviderPicker()
+          return true
+        case 'agent':
+          if (arg) openAgent(arg)
+          else openAgentPicker()
+          return true
+        case 'new':
+          install(null)
+          return true
+        case 'close':
+          void closeSession()
+          return true
+        case 'cancel':
+          if (isBusy(current)) cancel()
+          else notify(id, 'Nothing is running.')
+          return true
+        case 'clear':
+          mutate((s) => ({ ...s, entries: [] }))
+          return true
+        case 'thoughts':
+          setShowThoughts((v) => !v)
+          return true
+        case 'sessions':
+          setShowRail((v) => !v)
+          return true
+        case 'changes':
+          setShowChanges((v) => !v)
+          return true
+        case 'forget':
+          forgetSaved()
+          return true
+        default:
+          return false
+      }
+    },
+    [
+      cancel,
+      chooseProvider,
+      closeSession,
+      configure,
+      forgetSaved,
+      install,
+      mutate,
+      notify,
+      openAgent,
+      openAgentPicker,
+      openModelPicker,
+      openProviderPicker,
+      setMode,
+      startGoalWith,
+    ],
+  )
+
+  const send = useCallback(() => {
+    const current = sessionRef.current
+    const raw = draftRef.current.trim()
+    if (!current || !raw) return
+    const parsed = parseInput(raw)
+    if (parsed.kind === 'unknown') {
+      notify(
+        current.sessionId,
+        `There is no /${parsed.name} command. Type /help for the list, or start with // to send a leading slash.`,
+        'warn',
+      )
+      return
+    }
+    if (parsed.kind === 'command') {
+      if (runCommand(parsed.name, parsed.arg)) setDraft('')
+      return
+    }
+    const text = parsed.text
+    if (isBusy(current) || configuringRef.current) return
+    // A goal between turns is about to send its own continuation.
+    if (current.goal) return
+    if (current.mode === 'goal') {
+      const step = beginGoal(current, text)
+      submit(step.state, step.sent, true)
+      return
+    }
+    submit(startTurn(current, text), text, true)
+  }, [notify, runCommand, submit])
 
   // Drive the goal loop: a completed turn that asked to continue is followed
   // by the next one as soon as the session is idle and connected.
@@ -734,31 +919,6 @@ export default function App() {
     const step = current ? continueGoal(current) : null
     if (step) submit(step.state, step.sent, false)
   }, [configuring, conn.kind, goalNext, phase, submit])
-
-  const openProviderPicker = useCallback(() => {
-    const current = settingsTarget()
-    if (!current || !capsRef.current.providers) return
-    const active = effectiveIdentity(current).provider
-    const token = openPicker({
-      title: 'Provider',
-      placeholder: 'Search configured providers',
-      loading: true,
-    })
-    ipc.modelProviders().then(
-      (references) =>
-        fillPicker(token, {
-          loading: false,
-          note: references.length === 0 ? 'This daemon has no configured providers.' : null,
-          actions: references.map((reference) => ({
-            id: `provider:${reference}`,
-            label: reference,
-            hint: reference === active ? 'current' : undefined,
-            run: () => void chooseProvider(reference),
-          })),
-        }),
-      (e) => fillPicker(token, { loading: false, note: `Could not list providers: ${failureText(e)}` }),
-    )
-  }, [chooseProvider, fillPicker, openPicker, settingsTarget])
 
   // ── Keyboard ────────────────────────────────────────────────────
   useEffect(() => {
@@ -901,6 +1061,12 @@ export default function App() {
         run: forgetSaved,
       },
       {
+        id: 'agent',
+        label: 'New session with another agent…',
+        enabled: !!session && agents.length > 0,
+        run: openAgentPicker,
+      },
+      {
         id: 'thoughts',
         label: showThoughts ? 'Hide thinking' : 'Show thinking',
         run: () => setShowThoughts((v) => !v),
@@ -941,6 +1107,7 @@ export default function App() {
       },
     ],
     [
+      agents.length,
       cancel,
       caps,
       closeSession,
@@ -949,6 +1116,7 @@ export default function App() {
       info,
       install,
       mutate,
+      openAgentPicker,
       openModelPicker,
       openProviderPicker,
       planSupport,

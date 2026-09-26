@@ -73,7 +73,7 @@ export function Composer({
           Thinking: {showThoughts ? 'shown' : 'hidden'}
         </button>
         <span className={hold ? 'hint held' : 'hint'} role={hold ? 'status' : undefined}>
-          {hold ?? 'Enter to send · Shift+Enter for a new line · Shift+Tab for modes · ⌘K for actions'}
+          {hold ?? 'Enter to send · Shift+Enter new line · / commands · Shift+Tab modes · ⌘K actions'}
         </span>
         <span className="spacer" />
         {busy ? (
