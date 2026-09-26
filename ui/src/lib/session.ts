@@ -214,9 +214,10 @@ export function applyUpdate(state: SessionState, update: SessionUpdate): Session
     case 'agent_message_chunk': {
       const text = (update as { text: string }).text
       const entries = [...state.entries]
-      const last = entries[entries.length - 1]
+      const at = behindNotices(entries)
+      const last = entries[at]
       if (last && last.kind === 'assistant' && last.streaming) {
-        entries[entries.length - 1] = { ...last, text: last.text + text }
+        entries[at] = { ...last, text: last.text + text }
       } else {
         entries.push({
           kind: 'assistant',
@@ -232,9 +233,10 @@ export function applyUpdate(state: SessionState, update: SessionUpdate): Session
     case 'agent_thought_chunk': {
       const text = (update as { text: string }).text
       const entries = [...state.entries]
-      const last = entries[entries.length - 1]
-      if (last && last.kind === 'thought') {
-        entries[entries.length - 1] = { ...last, text: last.text + text }
+      const at = behindNotices(entries)
+      const last = entries[at]
+      if (last && last.kind === 'thought' && last.turn === state.turn) {
+        entries[at] = { ...last, text: last.text + text }
       } else {
         entries.push({ kind: 'thought', id: nextId('thought'), text, turn: state.turn })
       }
@@ -350,6 +352,17 @@ export function applyUpdate(state: SessionState, update: SessionUpdate): Session
     default:
       return state
   }
+}
+
+/**
+ * The index of the last entry that is not a notice. A notice posted while a
+ * reply streams, such as a refused mode change, sits after the reply instead
+ * of splitting it in two.
+ */
+function behindNotices(entries: Entry[]): number {
+  let at = entries.length - 1
+  while (at >= 0 && entries[at]?.kind === 'notice') at -= 1
+  return at
 }
 
 /** Close any open streaming assistant entry. */

@@ -6,6 +6,7 @@ import {
   applyUpdate,
   createSession,
   loadHistory,
+  pushNotice,
   startTurn,
   type SessionState,
 } from './session.ts'
@@ -271,4 +272,32 @@ test('history trimming surfaces a visible notice', () => {
   })
   const notice = state.entries.find((e) => e.kind === 'notice')
   assert.ok(notice?.kind === 'notice' && notice.text.includes('trimmed'))
+})
+
+test('a notice posted mid-reply does not split the reply', () => {
+  let state = startTurn(fresh(), 'go')
+  state = applyUpdate(state, chunk('Here is '))
+  state = pushNotice(state, 'A turn is running.', 'warn')
+  state = applyUpdate(state, chunk('the plan.'))
+  const kinds = state.entries.map((e) => e.kind)
+  assert.deepEqual(kinds, ['user', 'assistant', 'notice'])
+  const reply = state.entries[1]
+  assert.equal(reply?.kind === 'assistant' && reply.text, 'Here is the plan.')
+})
+
+test('a notice between turns still starts a fresh reply', () => {
+  let state = startTurn(fresh(), 'first')
+  state = applyUpdate(state, chunk('one'))
+  state = applyUpdate(state, {
+    type: 'turn_complete',
+    session_id: 's1',
+    outcome: 'completed',
+    content: 'one',
+    client_turn_generation: state.generation,
+  })
+  state = pushNotice(state, 'Model set to m2.')
+  state = startTurn(state, 'second')
+  state = applyUpdate(state, chunk('two'))
+  const replies = state.entries.filter((e) => e.kind === 'assistant')
+  assert.equal(replies.length, 2)
 })
