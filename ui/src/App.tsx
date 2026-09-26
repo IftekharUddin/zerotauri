@@ -1108,6 +1108,11 @@ export default function App() {
         setShowChanges((v) => !v)
         return
       }
+      if (modKey(event) && !event.shiftKey && event.key.toLowerCase() === 'n') {
+        event.preventDefault()
+        install(null)
+        return
+      }
       // Shift is part of these because Option+letter types a character in a
       // macOS text field and Cmd+M is the system's Minimize.
       if (modKey(event) && event.shiftKey && event.code === 'KeyM') {
@@ -1156,7 +1161,16 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [cancel, decide, openEffortPicker, openModelPicker, openProviderPicker, paletteOpen, picker])
+  }, [
+    cancel,
+    decide,
+    install,
+    openEffortPicker,
+    openModelPicker,
+    openProviderPicker,
+    paletteOpen,
+    picker,
+  ])
 
   const actions = useMemo<Action[]>(
     () => [
