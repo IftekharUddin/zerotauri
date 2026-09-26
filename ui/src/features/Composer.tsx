@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 
 interface ComposerProps {
   value: string
@@ -10,6 +10,10 @@ interface ComposerProps {
   showThoughts: boolean
   onToggleThoughts: () => void
   agentAlias: string
+  /** Session settings shown at the start of the row. */
+  controls?: ReactNode
+  /** Why sending is paused right now, if it is. Typing stays allowed. */
+  hold?: string | null
 }
 
 export function Composer({
@@ -22,6 +26,8 @@ export function Composer({
   showThoughts,
   onToggleThoughts,
   agentAlias,
+  controls,
+  hold = null,
 }: ComposerProps) {
   const ref = useRef<HTMLTextAreaElement>(null)
 
@@ -52,10 +58,13 @@ export function Composer({
         onKeyDown={onKeyDown}
       />
       <div className="row">
+        {controls}
         <button type="button" className="ghost" onClick={onToggleThoughts} aria-pressed={showThoughts}>
           Thinking: {showThoughts ? 'shown' : 'hidden'}
         </button>
-        <span className="hint">Enter to send · Shift+Enter for a new line · ⌘K for actions</span>
+        <span className={hold ? 'hint held' : 'hint'} role={hold ? 'status' : undefined}>
+          {hold ?? 'Enter to send · Shift+Enter for a new line · ⌘K for actions'}
+        </span>
         <span className="spacer" />
         {busy ? (
           <button type="button" onClick={onCancel}>
@@ -65,7 +74,7 @@ export function Composer({
           <button
             type="button"
             className="primary"
-            disabled={disabled || value.trim().length === 0}
+            disabled={disabled || hold !== null || value.trim().length === 0}
             onClick={onSubmit}
           >
             Send

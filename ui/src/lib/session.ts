@@ -5,7 +5,8 @@
 // generation does not match the turn we started is ignored, so a terminal
 // event from an older turn can never settle a newer one.
 
-import type { MessageEntry, PlanEntry, SessionUpdate } from './types'
+import { NO_OVERRIDES, UNKNOWN_IDENTITY } from './overrides.ts'
+import type { Identity, MessageEntry, PlanEntry, SessionOverrides, SessionUpdate } from './types.ts'
 
 export type TurnPhase =
   | 'idle'
@@ -58,6 +59,10 @@ export interface SessionState {
   contextInput: number | null
   contextMax: number | null
   turn: number
+  /** The settings the daemon confirmed for this session. */
+  overrides: SessionOverrides
+  /** The configured provider and model, used where no override is set. */
+  identity: Identity
 }
 
 let counter = 0
@@ -75,6 +80,8 @@ export function createSession(opts: {
   branch?: string | null
   hash?: string | null
   plan?: PlanEntry[] | null
+  overrides?: SessionOverrides
+  identity?: Identity
 }): SessionState {
   return {
     sessionId: opts.sessionId,
@@ -91,6 +98,8 @@ export function createSession(opts: {
     contextInput: null,
     contextMax: null,
     turn: 0,
+    overrides: opts.overrides ?? NO_OVERRIDES,
+    identity: opts.identity ?? UNKNOWN_IDENTITY,
   }
 }
 

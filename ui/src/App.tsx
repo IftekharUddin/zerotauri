@@ -5,11 +5,22 @@ import { ChangesPanel } from './features/ChangesPanel'
 import { Composer } from './features/Composer'
 import { Palette, type Action } from './features/Palette'
 import { PlanStrip } from './features/PlanStrip'
+import { SessionControls } from './features/SessionControls'
 import { SessionRail } from './features/SessionRail'
 import { Setup } from './features/Setup'
 import { StatusBar } from './features/StatusBar'
 import { Transcript } from './features/Transcript'
 import * as ipc from './lib/ipc'
+import {
+  SETTINGS_BUSY,
+  applyConfigureEcho,
+  configureFailureText,
+  deriveCaps,
+  describeChange,
+  effectiveIdentity,
+  failureText,
+  type Caps,
+} from './lib/overrides'
 import {
   applyUpdate,
   clearApproval,
@@ -24,7 +35,9 @@ import {
 import type {
   AgentChoice,
   ApprovalDecision,
+  Configured,
   ConnectionInfo,
+  OverridePatch,
   SessionSummary,
 } from './lib/types'
 
@@ -34,6 +47,22 @@ type ConnPhase =
   | { kind: 'lost' }
   | { kind: 'reconnecting'; attempt: number }
   | { kind: 'failed'; message: string }
+
+/** The palette reused as a picker. `token` lets a late fetch find its picker. */
+interface Picker {
+  token: number
+  title: string
+  placeholder: string
+  actions: Action[]
+  loading: boolean
+  note: string | null
+  fallback?: (query: string) => Action | null
+}
+
+type PickerSpec = Pick<Picker, 'title' | 'placeholder' | 'fallback'> &
+  Partial<Pick<Picker, 'actions' | 'loading' | 'note'>>
+
+type Tone = 'info' | 'warn' | 'error'
 
 const isMac = navigator.platform.toLowerCase().includes('mac')
 const modKey = (event: KeyboardEvent) => (isMac ? event.metaKey : event.ctrlKey)
@@ -54,18 +83,28 @@ export default function App() {
   const [approving, setApproving] = useState(false)
   const [recovery, setRecovery] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [picker, setPicker] = useState<Picker | null>(null)
+  const [configuring, setConfiguring] = useState(false)
 
   const sessionRef = useRef<SessionState | null>(null)
   const draftRef = useRef('')
   draftRef.current = draft
+  const pickerSeq = useRef(0)
+  const configuringRef = useRef(false)
+  const caps = useMemo(() => deriveCaps(info), [info])
+  const capsRef = useRef<Caps>(caps)
+  capsRef.current = caps
 
+  // Changes apply to the ref first, then publish to React. Every write goes
+  // through here or `install`, so the ref is always the latest state and a
+  // callback can read it straight after a change instead of after a render.
   const mutate = useCallback((fn: (current: SessionState) => SessionState) => {
-    setSession((current) => {
-      if (!current) return current
-      const next = fn(current)
-      sessionRef.current = next
-      return next
-    })
+    const current = sessionRef.current
+    if (!current) return
+    const next = fn(current)
+    if (next === current) return
+    sessionRef.current = next
+    setSession(next)
   }, [])
 
   const install = useCallback((next: SessionState | null) => {
@@ -80,6 +119,28 @@ export default function App() {
       // A daemon without the ACP listing simply shows no history.
     }
   }, [])
+
+  /** Post a notice to one session, and only if it is still the open one. */
+  const notify = useCallback(
+    (sessionId: string, text: string, tone: Tone = 'info') => {
+      mutate((s) => (s.sessionId === sessionId ? pushNotice(s, text, tone) : s))
+    },
+    [mutate],
+  )
+
+  /** Read the configured provider and model a session falls back to. */
+  const loadIdentity = useCallback(
+    async (target: { sessionId: string; agentAlias: string }, modelProvider?: string | null) => {
+      if (!capsRef.current.identity) return
+      try {
+        const identity = await ipc.sessionIdentity({ agentAlias: target.agentAlias, modelProvider })
+        mutate((s) => (s.sessionId === target.sessionId ? { ...s, identity } : s))
+      } catch {
+        // Display only: an unknown default reads as "default".
+      }
+    },
+    [mutate],
+  )
 
   // ── Connection lifecycle ────────────────────────────────────────
   useEffect(() => {
@@ -184,6 +245,7 @@ export default function App() {
             reopened.messages,
           )
           install(rebuilt)
+          void loadIdentity(rebuilt)
           if (reopened.state === 'running') setRecovery(reopened.sessionId)
         } catch (e) {
           setError(String(e))
@@ -198,7 +260,7 @@ export default function App() {
       active = false
       stop?.()
     }
-  }, [install])
+  }, [install, loadIdentity])
 
   // ── Session actions ─────────────────────────────────────────────
   const openSession = useCallback(
@@ -235,6 +297,7 @@ export default function App() {
           opened.messages,
         )
         install(next)
+        void loadIdentity(next)
         if (opened.state === 'running') setRecovery(opened.sessionId)
         await refreshSessions()
       } catch (e) {
@@ -243,13 +306,13 @@ export default function App() {
         setOpening(false)
       }
     },
-    [install, refreshSessions],
+    [install, loadIdentity, refreshSessions],
   )
 
   const send = useCallback(() => {
     const current = sessionRef.current
     const text = draftRef.current.trim()
-    if (!current || !text || isBusy(current)) return
+    if (!current || !text || isBusy(current) || configuringRef.current) return
     const next = startTurn(current, text)
     install(next)
     setDraft('')
@@ -306,9 +369,158 @@ export default function App() {
     await refreshSessions()
   }, [install, refreshSessions])
 
+  // ── Session settings ────────────────────────────────────────────
+  const openPicker = useCallback((spec: PickerSpec): number => {
+    pickerSeq.current += 1
+    const token = pickerSeq.current
+    setPicker({ actions: [], loading: false, note: null, ...spec, token })
+    return token
+  }, [])
+
+  // A list fetched after the picker opened lands only if that picker is
+  // still the one on screen.
+  const fillPicker = useCallback((token: number, patch: Partial<Picker>) => {
+    setPicker((open) => (open && open.token === token ? { ...open, ...patch } : open))
+  }, [])
+
+  const setConfiguringFlag = useCallback((value: boolean) => {
+    configuringRef.current = value
+    setConfiguring(value)
+  }, [])
+
+  /**
+   * Send one settings patch. Refused locally while a turn runs, so a change
+   * never lands halfway through one, and sending waits until the daemon
+   * confirms, so a prompt never runs under settings the UI only assumed.
+   */
+  const configure = useCallback(
+    async (patch: OverridePatch, reset?: string[]): Promise<Configured | null> => {
+      const current = sessionRef.current
+      if (!current) return null
+      if (isBusy(current)) {
+        notify(current.sessionId, SETTINGS_BUSY, 'warn')
+        return null
+      }
+      if (configuringRef.current) return null
+      setConfiguringFlag(true)
+      try {
+        const result = await ipc.sessionConfigure({
+          sessionId: current.sessionId,
+          overrides: patch,
+          reset,
+        })
+        mutate((s) => applyConfigureEcho(s, patch, result))
+        const said = describeChange(patch, result)
+        if (said) notify(current.sessionId, said)
+        return result
+      } catch (e) {
+        notify(current.sessionId, configureFailureText(e), 'error')
+        return null
+      } finally {
+        setConfiguringFlag(false)
+      }
+    },
+    [mutate, notify, setConfiguringFlag],
+  )
+
+  /** Settings pickers open only on an idle session the daemon can configure. */
+  const settingsTarget = useCallback((): SessionState | null => {
+    const current = sessionRef.current
+    if (!current || !capsRef.current.configure) return null
+    if (isBusy(current)) {
+      notify(current.sessionId, SETTINGS_BUSY, 'warn')
+      return null
+    }
+    return current
+  }, [notify])
+
+  const openModelPicker = useCallback(
+    (forProvider?: string) => {
+      const current = settingsTarget()
+      if (!current) return
+      const identity = effectiveIdentity(current)
+      const provider = forProvider ?? identity.provider
+      const listable = provider !== null && capsRef.current.catalog
+      const token = openPicker({
+        title: provider ? `Model for ${provider}` : 'Model',
+        placeholder: 'Search models, or type a model id',
+        loading: listable,
+        note: provider ? null : 'The provider for this session is not known, so there is no list. Type a model id.',
+        // The daemon does not check a model id against the catalogue, and the
+        // catalogue can lag a provider, so a typed id is always offered.
+        fallback: (query) => ({
+          id: 'model:typed',
+          label: `Use model "${query}"`,
+          run: () => void configure({ model: query }),
+        }),
+      })
+      if (!listable || provider === null) return
+      ipc.catalogModels(provider).then(
+        (catalog) =>
+          fillPicker(token, {
+            loading: false,
+            note:
+              catalog.models.length === 0
+                ? `No models listed for ${provider}. Type a model id.`
+                : null,
+            actions: catalog.models.map((model) => ({
+              id: `model:${model}`,
+              label: model,
+              hint:
+                model === identity.model && provider === identity.provider ? 'current' : undefined,
+              run: () => void configure({ model }),
+            })),
+          }),
+        (e) => fillPicker(token, { loading: false, note: `Could not list models: ${failureText(e)}` }),
+      )
+    },
+    [configure, fillPicker, openPicker, settingsTarget],
+  )
+
+  const chooseProvider = useCallback(
+    async (reference: string) => {
+      const current = sessionRef.current
+      if (!current) return
+      const result = await configure({ modelProvider: reference })
+      if (!result || result.overrides.model !== null) return
+      // The daemon falls back to the new provider's configured model. Show it,
+      // then offer that provider's list, as zerocode does.
+      await loadIdentity(current, reference)
+      openModelPicker(reference)
+    },
+    [configure, loadIdentity, openModelPicker],
+  )
+
+  const openProviderPicker = useCallback(() => {
+    const current = settingsTarget()
+    if (!current || !capsRef.current.providers) return
+    const active = effectiveIdentity(current).provider
+    const token = openPicker({
+      title: 'Provider',
+      placeholder: 'Search configured providers',
+      loading: true,
+    })
+    ipc.modelProviders().then(
+      (references) =>
+        fillPicker(token, {
+          loading: false,
+          note: references.length === 0 ? 'This daemon has no configured providers.' : null,
+          actions: references.map((reference) => ({
+            id: `provider:${reference}`,
+            label: reference,
+            hint: reference === active ? 'current' : undefined,
+            run: () => void chooseProvider(reference),
+          })),
+        }),
+      (e) => fillPicker(token, { loading: false, note: `Could not list providers: ${failureText(e)}` }),
+    )
+  }, [chooseProvider, fillPicker, openPicker, settingsTarget])
+
   // ── Keyboard ────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // A picker owns the keyboard until it closes.
+      if (picker) return
       if (modKey(event) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
         setPaletteOpen((open) => !open)
@@ -324,6 +536,18 @@ export default function App() {
       if (modKey(event) && event.key.toLowerCase() === 'j') {
         event.preventDefault()
         setShowChanges((v) => !v)
+        return
+      }
+      // Shift is part of these because Option+letter types a character in a
+      // macOS text field and Cmd+M is the system's Minimize.
+      if (modKey(event) && event.shiftKey && event.code === 'KeyM') {
+        event.preventDefault()
+        openModelPicker()
+        return
+      }
+      if (modKey(event) && event.shiftKey && event.code === 'KeyP') {
+        event.preventDefault()
+        openProviderPicker()
         return
       }
 
@@ -357,7 +581,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [cancel, decide, paletteOpen])
+  }, [cancel, decide, openModelPicker, openProviderPicker, paletteOpen, picker])
 
   const actions = useMemo<Action[]>(
     () => [
@@ -379,6 +603,20 @@ export default function App() {
         label: 'Close this session',
         enabled: !!session,
         run: () => void closeSession(),
+      },
+      {
+        id: 'model',
+        label: 'Change model…',
+        hint: isMac ? '⇧⌘M' : 'Ctrl+Shift+M',
+        enabled: !!session && caps.configure,
+        run: () => openModelPicker(),
+      },
+      {
+        id: 'provider',
+        label: 'Change provider…',
+        hint: isMac ? '⇧⌘P' : 'Ctrl+Shift+P',
+        enabled: !!session && caps.configure && caps.providers,
+        run: openProviderPicker,
       },
       {
         id: 'thoughts',
@@ -420,7 +658,19 @@ export default function App() {
         },
       },
     ],
-    [cancel, closeSession, info, install, session, showChanges, showRail, showThoughts],
+    [
+      cancel,
+      caps,
+      closeSession,
+      info,
+      install,
+      openModelPicker,
+      openProviderPicker,
+      session,
+      showChanges,
+      showRail,
+      showThoughts,
+    ],
   )
 
   const connected = conn.kind === 'connected'
@@ -587,6 +837,16 @@ export default function App() {
                 showThoughts={showThoughts}
                 onToggleThoughts={() => setShowThoughts((v) => !v)}
                 agentAlias={session.agentAlias}
+                hold={configuring ? 'Applying session settings…' : null}
+                controls={
+                  <SessionControls
+                    session={session}
+                    caps={caps}
+                    locked={busy || configuring}
+                    onProvider={openProviderPicker}
+                    onModel={() => openModelPicker()}
+                  />
+                }
               />
             </>
           )}
@@ -598,6 +858,18 @@ export default function App() {
       <StatusBar info={info} connected={connected} session={session} />
 
       {paletteOpen && <Palette actions={actions} onClose={() => setPaletteOpen(false)} />}
+      {picker && (
+        <Palette
+          key={picker.token}
+          title={picker.title}
+          placeholder={picker.placeholder}
+          actions={picker.actions}
+          loading={picker.loading}
+          note={picker.note}
+          fallback={picker.fallback}
+          onClose={() => setPicker(null)}
+        />
+      )}
     </div>
   )
 }
