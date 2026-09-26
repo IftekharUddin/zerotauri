@@ -14,6 +14,7 @@ import type {
   OverridePatch,
   RpcFailure,
   SessionOverrides,
+  ThinkingOptions,
 } from './types.ts'
 
 export const NO_OVERRIDES: SessionOverrides = {
@@ -75,6 +76,9 @@ export function applyConfigureEcho(
   result: Configured,
 ): SessionState {
   if (result.sessionId !== state.sessionId) return state
+  if (result.thinkingOptions) {
+    return applyThinking({ ...state, overrides: { ...result.overrides } }, result.thinkingOptions)
+  }
   const before = effectiveIdentity(state)
   let identity = state.identity
   if (requested.modelProvider != null && requested.modelProvider !== before.provider) {
@@ -83,8 +87,54 @@ export function applyConfigureEcho(
   return { ...state, overrides: { ...result.overrides }, identity }
 }
 
+/**
+ * Take a thinking report as the session's truth. It names the provider and
+ * model the daemon actually resolved, which is the one authoritative read of
+ * a session's identity, so it replaces the config-derived guess.
+ */
+export function applyThinking(state: SessionState, thinking: ThinkingOptions): SessionState {
+  return {
+    ...state,
+    thinking,
+    identity: {
+      provider: thinking.modelProvider || state.identity.provider,
+      model: thinking.model || state.identity.model,
+    },
+  }
+}
+
+/** True when the session's model has a reasoning depth this daemon can set. */
+export const effortAdjustable = (state: Pick<SessionState, 'thinking'>): boolean =>
+  (state.thinking?.levels.length ?? 0) > 0
+
+export const displayAdjustable = (state: Pick<SessionState, 'thinking'>): boolean =>
+  (state.thinking?.displays.length ?? 0) > 0
+
+const SOURCE_WORDS: Record<string, string> = {
+  session: 'set for this session',
+  profile: 'from the runtime profile',
+  alias: 'from the provider settings',
+  model_default: "the model's default",
+}
+
+/** Where a thinking value came from, in words. */
+export const sourceWords = (source: string | null): string =>
+  source ? (SOURCE_WORDS[source] ?? source) : 'not reported'
+
+/** Why the effort control is not offered, for a command or shortcut that asked for it. */
+export function effortUnavailable(state: Pick<SessionState, 'thinking'>, caps: Caps): string {
+  if (!caps.thinkingOptions || !state.thinking) {
+    return 'This daemon cannot set a reasoning effort per session. That needs a ZeroClaw daemon with per-session thinking controls.'
+  }
+  return `The model ${state.thinking.model || 'in use'} has no reasoning effort this daemon can adjust.`
+}
+
 /** A one-line transcript record of what a configure changed, if anything. */
-export function describeChange(requested: OverridePatch, result: Configured): string | null {
+export function describeChange(
+  requested: OverridePatch,
+  result: Configured,
+  reset: readonly string[] = [],
+): string | null {
   const kept = result.overrides
   if (requested.modelProvider != null) {
     const provider = kept.modelProvider ?? requested.modelProvider
@@ -93,6 +143,19 @@ export function describeChange(requested: OverridePatch, result: Configured): st
       : `Provider set to ${provider}, on its configured model.`
   }
   if (requested.model != null) return `Model set to ${kept.model ?? requested.model}.`
+  const thinking = result.thinkingOptions
+  if (requested.thinkingLevel != null) {
+    return `Reasoning effort set to ${kept.thinkingLevel ?? requested.thinkingLevel}.`
+  }
+  if (requested.thinkingDisplay != null) {
+    return `Thinking display set to ${kept.thinkingDisplay ?? requested.thinkingDisplay}.`
+  }
+  if (reset.includes('thinking_level')) {
+    return `Reasoning effort back to the default${thinking?.currentLevel ? `, now ${thinking.currentLevel}` : ''}.`
+  }
+  if (reset.includes('thinking_display')) {
+    return `Thinking display back to the default${thinking?.currentDisplay ? `, now ${thinking.currentDisplay}` : ''}.`
+  }
   return null
 }
 

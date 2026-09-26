@@ -20,6 +20,8 @@ interface PaletteProps {
   note?: string | null
   /** An extra row built from the query, offered unless a choice matches it exactly. */
   fallback?: (query: string) => Action | null
+  /** The action the cursor starts on before anything is typed, such as the current value. */
+  selectedId?: string
 }
 
 /**
@@ -35,9 +37,12 @@ export function Palette({
   loading = false,
   note = null,
   fallback,
+  selectedId,
 }: PaletteProps) {
   const [query, setQuery] = useState('')
-  const [cursor, setCursor] = useState(0)
+  // `null` until the reader moves the cursor, so the start row can follow a
+  // list that arrives after the picker opened.
+  const [cursor, setCursor] = useState<number | null>(null)
 
   const matches = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -51,8 +56,9 @@ export function Palette({
     return found
   }, [actions, query, fallback])
 
-  useEffect(() => setCursor(0), [query])
-  const selected = Math.min(cursor, Math.max(matches.length - 1, 0))
+  useEffect(() => setCursor(null), [query])
+  const start = query === '' && selectedId ? Math.max(matches.findIndex((a) => a.id === selectedId), 0) : 0
+  const selected = Math.min(cursor ?? start, Math.max(matches.length - 1, 0))
 
   const choose = (action: Action) => {
     onClose()

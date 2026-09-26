@@ -214,8 +214,9 @@ code.inline {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .composer .hint.held { color: var(--zc-warn); }
-.composer .controls { display: inline-flex; gap: 6px; min-width: 0; flex: 0 1 auto; }
-.chip.control { max-width: 260px; }
+.composer .controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 7px; }
+.composer .row > button { white-space: nowrap; flex: 0 0 auto; }
+.chip.control { max-width: 100%; min-width: 0; }
 .chip.control .label { color: var(--zc-text-faint); }
 .chip.control .value {
   color: var(--zc-text); font-family: var(--zc-mono); font-size: 11.5px;

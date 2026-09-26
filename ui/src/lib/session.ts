@@ -16,7 +16,14 @@ import {
 } from './goal.ts'
 import type { Mode } from './modes.ts'
 import { NO_OVERRIDES, UNKNOWN_IDENTITY } from './overrides.ts'
-import type { Identity, MessageEntry, PlanEntry, SessionOverrides, SessionUpdate } from './types.ts'
+import type {
+  Identity,
+  MessageEntry,
+  PlanEntry,
+  SessionOverrides,
+  SessionUpdate,
+  ThinkingOptions,
+} from './types.ts'
 
 export type TurnPhase =
   | 'idle'
@@ -76,6 +83,11 @@ export interface SessionState {
   mode: Mode
   /** The goal loop, while one is running. */
   goal: GoalRun | null
+  /**
+   * What the session's model accepts for reasoning depth and display, and
+   * what it has now. `null` on a daemon without per-session thinking controls.
+   */
+  thinking: ThinkingOptions | null
 }
 
 let counter = 0
@@ -116,6 +128,7 @@ export function createSession(opts: {
     identity: opts.identity ?? UNKNOWN_IDENTITY,
     mode: opts.mode ?? 'build',
     goal: null,
+    thinking: null,
   }
 }
 

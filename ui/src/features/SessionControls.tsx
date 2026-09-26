@@ -1,6 +1,12 @@
 import { goalLabel } from '../lib/goal'
 import { MODE_SUMMARY, type PlanSupport } from '../lib/modes'
-import { effectiveIdentity, type Caps } from '../lib/overrides'
+import {
+  displayAdjustable,
+  effectiveIdentity,
+  effortAdjustable,
+  sourceWords,
+  type Caps,
+} from '../lib/overrides'
 import type { SessionState } from '../lib/session'
 
 const isMac = navigator.platform.toLowerCase().includes('mac')
@@ -20,6 +26,8 @@ export function SessionControls({
   onCycleMode,
   onProvider,
   onModel,
+  onEffort,
+  onDisplay,
 }: {
   session: SessionState
   caps: Caps
@@ -28,10 +36,13 @@ export function SessionControls({
   onCycleMode: () => void
   onProvider: () => void
   onModel: () => void
+  onEffort: () => void
+  onDisplay: () => void
 }) {
   const identity = effectiveIdentity(session)
   const muted = locked ? ' muted' : ''
   const planNote = planSupport === 'unsupported' ? ' This daemon does not enforce plan mode.' : ''
+  const thinking = session.thinking
 
   return (
     <div className="controls" role="group" aria-label="Session settings">
@@ -64,6 +75,28 @@ export function SessionControls({
         >
           <span className="label">model</span>
           <span className="value">{identity.model ?? 'default'}</span>
+        </button>
+      )}
+      {thinking && effortAdjustable(session) && (
+        <button
+          type="button"
+          className={`chip control${muted}`}
+          onClick={onEffort}
+          title={`Reasoning effort, ${sourceWords(thinking.levelSource)}. Change it with ${key('E')}.`}
+        >
+          <span className="label">effort</span>
+          <span className="value">{thinking.currentLevel ?? 'default'}</span>
+        </button>
+      )}
+      {thinking && displayAdjustable(session) && (
+        <button
+          type="button"
+          className={`chip control${muted}`}
+          onClick={onDisplay}
+          title={`How much of the thinking the provider returns, ${sourceWords(thinking.displaySource)}.`}
+        >
+          <span className="label">display</span>
+          <span className="value">{thinking.currentDisplay ?? 'default'}</span>
         </button>
       )}
     </div>

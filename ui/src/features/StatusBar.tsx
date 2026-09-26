@@ -1,4 +1,5 @@
 import { goalLabel } from '../lib/goal'
+import { effortAdjustable } from '../lib/overrides'
 import { phaseLabel, type SessionState } from '../lib/session'
 import type { ConnectionInfo } from '../lib/types'
 
@@ -36,6 +37,9 @@ export function StatusBar({
         <span className={`modebadge ${session.mode}`} title="Session mode">
           {session.goal ? goalLabel(session.goal) : session.mode}
         </span>
+      )}
+      {session?.thinking && effortAdjustable(session) && (
+        <span title="Reasoning effort">effort {session.thinking.currentLevel ?? 'default'}</span>
       )}
       {session && <span>{phaseLabel(session)}</span>}
       {session?.contextInput != null && (

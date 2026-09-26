@@ -91,7 +91,7 @@ export function Transcript({
             case 'thought':
               return (
                 <div className="entry thought" key={entry.id}>
-                  <div className="who">Thinking</div>
+                  <div className="who">Thoughts</div>
                   <div className="bubble">{entry.text}</div>
                 </div>
               )

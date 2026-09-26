@@ -69,6 +69,39 @@ test('help lists every command and the escape', () => {
   assert.ok(help.includes('//'))
 })
 
+test('a leading /effort:<level> is a one-message depth, sent unchanged', () => {
+  assert.deepEqual(parseInput('/effort:HIGH refactor the parser'), {
+    kind: 'inline-effort',
+    level: 'high',
+    rest: 'refactor the parser',
+    text: '/effort:HIGH refactor the parser',
+  })
+  assert.deepEqual(parseInput('/effort high'), { kind: 'command', name: 'effort', arg: 'high' })
+  assert.deepEqual(parseInput('/think'), { kind: 'command', name: 'effort', arg: '' })
+})
+
+test('status reports effort only where the daemon can adjust it', () => {
+  __resetIds()
+  const base = createSession({ sessionId: 's1', agentAlias: 'coder', workspaceDir: '/repo' })
+  assert.match(statusText(base, null, 'unknown'), /Reasoning effort: not adjustable on this daemon/)
+  const tierC = {
+    ...base,
+    thinking: {
+      modelProvider: 'anthropic.default',
+      model: 'claude-fable-5-1',
+      levels: ['low', 'medium', 'high'],
+      displays: ['omitted', 'summarized'],
+      currentLevel: 'high',
+      levelSource: 'session',
+      currentDisplay: 'summarized',
+      displaySource: 'profile',
+    },
+  }
+  const text = statusText(tierC, null, 'unknown')
+  assert.match(text, /Reasoning effort: high \(set for this session; accepts low, medium, high\)/)
+  assert.match(text, /Thinking display: summarized \(from the runtime profile; accepts omitted, summarized\)/)
+})
+
 test('status names where each setting comes from', () => {
   __resetIds()
   const state = {

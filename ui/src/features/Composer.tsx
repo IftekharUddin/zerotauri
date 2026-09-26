@@ -10,7 +10,7 @@ interface ComposerProps {
   showThoughts: boolean
   onToggleThoughts: () => void
   agentAlias: string
-  /** Session settings shown at the start of the row. */
+  /** Session settings, shown on their own row above the message box. */
   controls?: ReactNode
   /** Why sending is paused right now, if it is. Typing stays allowed. */
   hold?: string | null
@@ -58,6 +58,7 @@ export function Composer({
 
   return (
     <div className="composer">
+      {controls}
       <textarea
         ref={ref}
         value={value}
@@ -68,9 +69,8 @@ export function Composer({
         onKeyDown={onKeyDown}
       />
       <div className="row">
-        {controls}
         <button type="button" className="ghost" onClick={onToggleThoughts} aria-pressed={showThoughts}>
-          Thinking: {showThoughts ? 'shown' : 'hidden'}
+          Thoughts: {showThoughts ? 'shown' : 'hidden'}
         </button>
         <span className={hold ? 'hint held' : 'hint'} role={hold ? 'status' : undefined}>
           {hold ?? 'Enter to send · Shift+Enter new line · / commands · Shift+Tab modes · ⌘K actions'}

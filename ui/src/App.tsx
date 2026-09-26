@@ -26,11 +26,16 @@ import {
 import {
   SETTINGS_BUSY,
   applyConfigureEcho,
+  applyThinking,
   configureFailureText,
   deriveCaps,
   describeChange,
+  displayAdjustable,
   effectiveIdentity,
+  effortAdjustable,
+  effortUnavailable,
   failureText,
+  sourceWords,
   type Caps,
 } from './lib/overrides'
 import {
@@ -69,6 +74,7 @@ import type {
   Configured,
   ConnectionInfo,
   OverridePatch,
+  SessionSettings,
   SessionSummary,
 } from './lib/types'
 
@@ -88,10 +94,11 @@ interface Picker {
   loading: boolean
   note: string | null
   fallback?: (query: string) => Action | null
+  selectedId?: string
 }
 
 type PickerSpec = Pick<Picker, 'title' | 'placeholder' | 'fallback'> &
-  Partial<Pick<Picker, 'actions' | 'loading' | 'note'>>
+  Partial<Pick<Picker, 'actions' | 'loading' | 'note' | 'selectedId'>>
 
 type Tone = 'info' | 'warn' | 'error'
 
@@ -492,7 +499,7 @@ export default function App() {
         })
         mutate((s) => applyConfigureEcho(s, patch, result))
         persist(current.sessionId, settingsFromOverrides(result.overrides))
-        const said = describeChange(patch, result)
+        const said = describeChange(patch, result, reset)
         if (said) notify(current.sessionId, said)
         return result
       } catch (e) {
@@ -541,6 +548,7 @@ export default function App() {
         (catalog) =>
           fillPicker(token, {
             loading: false,
+            selectedId: identity.model && provider === identity.provider ? `model:${identity.model}` : undefined,
             note:
               catalog.models.length === 0
                 ? `No models listed for ${provider}. Type a model id.`
@@ -586,6 +594,7 @@ export default function App() {
       (references) =>
         fillPicker(token, {
           loading: false,
+          selectedId: active ? `provider:${active}` : undefined,
           note: references.length === 0 ? 'This daemon has no configured providers.' : null,
           actions: references.map((reference) => ({
             id: `provider:${reference}`,
@@ -678,16 +687,28 @@ export default function App() {
           })
         : null
 
-      if (plan?.patch && capsRef.current.configure) {
-        const patch = plan.patch
+      const patch = plan?.patch && capsRef.current.configure ? plan.patch : null
+      const readsThinking = capsRef.current.thinkingOptions
+      if (patch || readsThinking) {
         setConfiguringFlag(true)
         try {
-          const live = capsRef.current.thinkingOptions
-            ? await ipc.sessionThinkingOptions(sessionId).catch(() => null)
-            : null
-          if (live && patchMatches(patch, live.overrides)) {
-            mutate((s) => (s.sessionId === sessionId ? { ...s, overrides: { ...live.overrides } } : s))
-          } else {
+          // Where the daemon can report a session's settings, read them first:
+          // they are the truth, and they may already hold what was saved.
+          let live: SessionSettings | null = null
+          if (readsThinking) {
+            live = await ipc.sessionThinkingOptions(sessionId).catch(() => null)
+            const report = live
+            if (report) {
+              mutate((s) => {
+                if (s.sessionId !== sessionId) return s
+                const withOverrides = { ...s, overrides: { ...report.overrides } }
+                return report.thinkingOptions
+                  ? applyThinking(withOverrides, report.thinkingOptions)
+                  : withOverrides
+              })
+            }
+          }
+          if (patch && !(live && patchMatches(patch, live.overrides))) {
             const result = await ipc.sessionConfigure({ sessionId, overrides: patch })
             mutate((s) => applyConfigureEcho(s, patch, result))
             persist(sessionId, settingsFromOverrides(result.overrides))
@@ -701,7 +722,10 @@ export default function App() {
       }
 
       if (!isOpen()) return
-      await loadIdentity(target, sessionRef.current?.overrides.modelProvider ?? null)
+      // A thinking report already named the provider and model.
+      if (!sessionRef.current?.thinking) {
+        await loadIdentity(target, sessionRef.current?.overrides.modelProvider ?? null)
+      }
 
       if (!plan || !isOpen()) return
       if (plan.mode === 'goal') {
@@ -725,6 +749,113 @@ export default function App() {
     [loadIdentity, mutate, notify, persist, setConfiguringFlag, setMode],
   )
   restoreRef.current = restoreSettings
+
+  const openEffortPicker = useCallback(() => {
+    const current = settingsTarget()
+    if (!current) return
+    const thinking = current.thinking
+    if (!thinking || !effortAdjustable(current)) {
+      notify(current.sessionId, effortUnavailable(current, capsRef.current), 'warn')
+      return
+    }
+    const actions: Action[] = thinking.levels.map((level) => ({
+      id: `effort:${level}`,
+      label: level,
+      hint:
+        level === thinking.currentLevel ? `current, ${sourceWords(thinking.levelSource)}` : undefined,
+      run: () => void configure({ thinkingLevel: level }),
+    }))
+    if (current.overrides.thinkingLevel) {
+      actions.push({
+        id: 'effort:default',
+        label: 'Go back to the default',
+        hint: 'profile or model',
+        run: () => void configure({}, ['thinking_level']),
+      })
+    }
+    openPicker({
+      title: `Reasoning effort for ${thinking.model || 'this model'}`,
+      placeholder: 'Search levels',
+      actions,
+      selectedId: thinking.currentLevel ? `effort:${thinking.currentLevel}` : undefined,
+    })
+  }, [configure, notify, openPicker, settingsTarget])
+
+  const openDisplayPicker = useCallback(() => {
+    const current = settingsTarget()
+    if (!current) return
+    const thinking = current.thinking
+    if (!thinking || !displayAdjustable(current)) {
+      notify(
+        current.sessionId,
+        `The model ${thinking?.model || 'in use'} has no thinking display this daemon can change.`,
+        'warn',
+      )
+      return
+    }
+    const actions: Action[] = thinking.displays.map((display) => ({
+      id: `display:${display}`,
+      label: display,
+      hint:
+        display === thinking.currentDisplay
+          ? `current, ${sourceWords(thinking.displaySource)}`
+          : undefined,
+      run: () => void configure({ thinkingDisplay: display }),
+    }))
+    if (current.overrides.thinkingDisplay) {
+      actions.push({
+        id: 'display:default',
+        label: 'Go back to the default',
+        run: () => void configure({}, ['thinking_display']),
+      })
+    }
+    openPicker({
+      title: `Thinking display for ${thinking.model || 'this model'}`,
+      placeholder: 'Search display kinds',
+      actions,
+      selectedId: thinking.currentDisplay ? `display:${thinking.currentDisplay}` : undefined,
+    })
+  }, [configure, notify, openPicker, settingsTarget])
+
+  /**
+   * `/effort <level>` and `/display <kind>`. Checked against what the
+   * session's model accepts, so a typo is caught before the round trip.
+   */
+  const setThinkingByName = useCallback(
+    (field: 'level' | 'display', arg: string): boolean => {
+      const current = sessionRef.current
+      if (!current) return false
+      const thinking = current.thinking
+      const adjustable = field === 'level' ? effortAdjustable(current) : displayAdjustable(current)
+      if (!thinking || !adjustable) {
+        notify(
+          current.sessionId,
+          field === 'level'
+            ? effortUnavailable(current, capsRef.current)
+            : `The model ${thinking?.model || 'in use'} has no thinking display this daemon can change.`,
+          'warn',
+        )
+        return false
+      }
+      const value = arg.trim().toLowerCase()
+      if (value === 'default' || value === 'reset') {
+        void configure({}, [field === 'level' ? 'thinking_level' : 'thinking_display'])
+        return true
+      }
+      const accepted = field === 'level' ? thinking.levels : thinking.displays
+      if (!accepted.includes(value)) {
+        notify(
+          current.sessionId,
+          `${thinking.model || 'This model'} accepts ${accepted.join(', ')}, or default.`,
+          'warn',
+        )
+        return false
+      }
+      void configure(field === 'level' ? { thinkingLevel: value } : { thinkingDisplay: value })
+      return true
+    },
+    [configure, notify],
+  )
 
   const openAgent = useCallback(
     (alias: string) => {
@@ -823,6 +954,18 @@ export default function App() {
           if (arg) void configure({ model: arg })
           else openModelPicker()
           return true
+        case 'effort':
+          if (!arg) {
+            openEffortPicker()
+            return true
+          }
+          return setThinkingByName('level', arg)
+        case 'display':
+          if (!arg) {
+            openDisplayPicker()
+            return true
+          }
+          return setThinkingByName('display', arg)
         case 'provider':
           if (arg) void chooseProvider(arg)
           else openProviderPicker()
@@ -871,9 +1014,12 @@ export default function App() {
       notify,
       openAgent,
       openAgentPicker,
+      openDisplayPicker,
+      openEffortPicker,
       openModelPicker,
       openProviderPicker,
       setMode,
+      setThinkingByName,
       startGoalWith,
     ],
   )
@@ -895,16 +1041,36 @@ export default function App() {
       if (runCommand(parsed.name, parsed.arg)) setDraft('')
       return
     }
-    const text = parsed.text
+    // A one-message depth is read by the daemon, so it is sent as typed, and
+    // only to a daemon that reads it: elsewhere the model would get the prefix.
+    let body = parsed.kind === 'text' ? parsed.text : parsed.rest
+    let prefix = ''
+    if (parsed.kind === 'inline-effort') {
+      if (!capsRef.current.thinkingOptions) {
+        notify(
+          current.sessionId,
+          'This daemon has no per-message effort control, so nothing was sent. Remove the /effort: prefix, or use a daemon with per-session thinking controls.',
+          'warn',
+        )
+        return
+      }
+      if (!body) {
+        notify(current.sessionId, 'Add a message after /effort:<level>.', 'warn')
+        return
+      }
+      prefix = `/effort:${parsed.level} `
+      body = parsed.rest
+    }
     if (isBusy(current) || configuringRef.current) return
     // A goal between turns is about to send its own continuation.
     if (current.goal) return
     if (current.mode === 'goal') {
-      const step = beginGoal(current, text)
-      submit(step.state, step.sent, true)
+      const step = beginGoal(current, body)
+      submit(step.state, prefix + step.sent, true)
       return
     }
-    submit(startTurn(current, text), text, true)
+    const typed = parsed.kind === 'inline-effort' ? parsed.text : body
+    submit(startTurn(current, typed), typed, true)
   }, [notify, runCommand, submit])
 
   // Drive the goal loop: a completed turn that asked to continue is followed
@@ -954,6 +1120,11 @@ export default function App() {
         openProviderPicker()
         return
       }
+      if (modKey(event) && event.shiftKey && event.code === 'KeyE') {
+        event.preventDefault()
+        openEffortPicker()
+        return
+      }
 
       const current = sessionRef.current
       const approval = current?.pendingApproval
@@ -985,7 +1156,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [cancel, decide, openModelPicker, openProviderPicker, paletteOpen, picker])
+  }, [cancel, decide, openEffortPicker, openModelPicker, openProviderPicker, paletteOpen, picker])
 
   const actions = useMemo<Action[]>(
     () => [
@@ -1061,6 +1232,19 @@ export default function App() {
         run: forgetSaved,
       },
       {
+        id: 'effort',
+        label: 'Change reasoning effort…',
+        hint: isMac ? '⇧⌘E' : 'Ctrl+Shift+E',
+        enabled: !!session && effortAdjustable(session),
+        run: openEffortPicker,
+      },
+      {
+        id: 'display',
+        label: 'Change thinking display…',
+        enabled: !!session && displayAdjustable(session),
+        run: openDisplayPicker,
+      },
+      {
         id: 'agent',
         label: 'New session with another agent…',
         enabled: !!session && agents.length > 0,
@@ -1068,7 +1252,7 @@ export default function App() {
       },
       {
         id: 'thoughts',
-        label: showThoughts ? 'Hide thinking' : 'Show thinking',
+        label: showThoughts ? 'Hide thoughts' : 'Show thoughts',
         run: () => setShowThoughts((v) => !v),
       },
       {
@@ -1117,6 +1301,8 @@ export default function App() {
       install,
       mutate,
       openAgentPicker,
+      openDisplayPicker,
+      openEffortPicker,
       openModelPicker,
       openProviderPicker,
       planSupport,
@@ -1301,7 +1487,7 @@ export default function App() {
                 showThoughts={showThoughts}
                 onToggleThoughts={() => setShowThoughts((v) => !v)}
                 agentAlias={session.agentAlias}
-                hold={configuring ? 'Applying session settings…' : null}
+                hold={configuring ? 'Updating session settings…' : null}
                 onCycleMode={cycleMode}
                 placeholder={placeholder}
                 controls={
@@ -1313,6 +1499,8 @@ export default function App() {
                     onCycleMode={cycleMode}
                     onProvider={openProviderPicker}
                     onModel={() => openModelPicker()}
+                    onEffort={openEffortPicker}
+                    onDisplay={openDisplayPicker}
                   />
                 }
               />
@@ -1335,6 +1523,7 @@ export default function App() {
           loading={picker.loading}
           note={picker.note}
           fallback={picker.fallback}
+          selectedId={picker.selectedId}
           onClose={() => setPicker(null)}
         />
       )}

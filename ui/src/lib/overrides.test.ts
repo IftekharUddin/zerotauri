@@ -8,10 +8,12 @@ import {
   deriveCaps,
   describeChange,
   effectiveIdentity,
+  effortAdjustable,
+  effortUnavailable,
   isRpcFailure,
 } from './overrides.ts'
 import { __resetIds, createSession, type SessionState } from './session.ts'
-import type { Configured, ConnectionInfo, SessionOverrides } from './types.ts'
+import type { Configured, ConnectionInfo, SessionOverrides, ThinkingOptions } from './types.ts'
 
 const info = (missingMethods: string[]): ConnectionInfo => ({
   endpoint: '/tmp/zc/data/daemon.sock',
@@ -104,6 +106,71 @@ test('the transcript records provider and model changes in words', () => {
     'Model set to gpt-5.',
   )
   assert.equal(describeChange({ temperature: 0.2 }, echo({ temperature: 0.2 })), null)
+})
+
+const thinking = (change: Partial<ThinkingOptions> = {}): ThinkingOptions => ({
+  modelProvider: 'anthropic.default',
+  model: 'claude-fable-5-1',
+  levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+  displays: ['omitted', 'summarized'],
+  currentLevel: 'medium',
+  levelSource: 'profile',
+  currentDisplay: 'omitted',
+  displaySource: 'model_default',
+  ...change,
+})
+
+test('a thinking report in the echo becomes the session identity and options', () => {
+  const state = applyConfigureEcho(fresh(), { model: 'claude-fable-5-1' }, {
+    ...echo({ model: 'claude-fable-5-1' }),
+    thinkingOptions: thinking(),
+  })
+  assert.deepEqual(state.identity, { provider: 'anthropic.default', model: 'claude-fable-5-1' })
+  assert.equal(state.thinking?.currentLevel, 'medium')
+  assert.equal(effortAdjustable(state), true)
+})
+
+test('a model with empty lists hides the thinking controls', () => {
+  const state = applyConfigureEcho(fresh(), { model: 'gpt-5' }, {
+    ...echo({ model: 'gpt-5' }),
+    thinkingOptions: thinking({ model: 'gpt-5', levels: [], displays: [], currentLevel: null }),
+  })
+  assert.equal(effortAdjustable(state), false)
+  assert.match(effortUnavailable(state, deriveCaps(info([]))), /gpt-5 has no reasoning effort/)
+  assert.match(effortUnavailable(fresh(), deriveCaps(info(['session/thinking-options']))), /cannot set/)
+})
+
+test('a model change clears the thinking overrides the daemon cleared', () => {
+  const tuned = applyConfigureEcho(fresh(), { thinkingLevel: 'high' }, {
+    ...echo({ thinkingLevel: 'high' }),
+    thinkingOptions: thinking({ currentLevel: 'high', levelSource: 'session' }),
+  })
+  assert.equal(tuned.overrides.thinkingLevel, 'high')
+  const switched = applyConfigureEcho(tuned, { model: 'claude-opus-4-6' }, {
+    ...echo({ model: 'claude-opus-4-6' }),
+    thinkingOptions: thinking({ model: 'claude-opus-4-6', levels: ['low', 'medium', 'high', 'max'] }),
+  })
+  assert.equal(switched.overrides.thinkingLevel, null)
+  assert.deepEqual(switched.thinking?.levels, ['low', 'medium', 'high', 'max'])
+})
+
+test('thinking changes and resets read in words', () => {
+  const withOptions = (o: Partial<SessionOverrides>, t: Partial<ThinkingOptions> = {}) => ({
+    ...echo(o),
+    thinkingOptions: thinking(t),
+  })
+  assert.equal(
+    describeChange({ thinkingLevel: 'high' }, withOptions({ thinkingLevel: 'high' })),
+    'Reasoning effort set to high.',
+  )
+  assert.equal(
+    describeChange({}, withOptions({}, { currentLevel: 'medium' }), ['thinking_level']),
+    'Reasoning effort back to the default, now medium.',
+  )
+  assert.equal(
+    describeChange({ thinkingDisplay: 'summarized' }, withOptions({ thinkingDisplay: 'summarized' })),
+    'Thinking display set to summarized.',
+  )
 })
 
 test('a refused value keeps the daemon text, which names what it accepts', () => {

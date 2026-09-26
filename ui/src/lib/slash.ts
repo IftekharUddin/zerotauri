@@ -7,7 +7,7 @@
 
 import { goalLabel } from './goal.ts'
 import type { PlanSupport } from './modes.ts'
-import { effectiveIdentity } from './overrides.ts'
+import { displayAdjustable, effectiveIdentity, effortAdjustable, sourceWords } from './overrides.ts'
 import type { SessionState } from './session.ts'
 import type { ConnectionInfo } from './types.ts'
 
@@ -36,6 +36,19 @@ export const COMMANDS: readonly CommandSpec[] = [
     summary: 'Switch to goal mode, and start the goal if an objective is given.',
   },
   { name: 'model', aliases: [], args: '[id]', summary: 'Pick a model, or set one by id.' },
+  {
+    name: 'effort',
+    aliases: ['think'],
+    args: '[level|default]',
+    summary:
+      'Pick a reasoning effort, set one, or go back to the default. Start a message with /effort:<level> to use one for that message only.',
+  },
+  {
+    name: 'display',
+    aliases: [],
+    args: '[kind|default]',
+    summary: 'Pick how much of the thinking the provider returns, or go back to the default.',
+  },
   {
     name: 'provider',
     aliases: ['model-provider'],
@@ -70,6 +83,11 @@ export type Parsed =
   | { kind: 'text'; text: string }
   | { kind: 'command'; name: string; arg: string }
   | { kind: 'unknown'; name: string }
+  /**
+   * `/effort:<level> rest`: a depth for this message only. The daemon reads
+   * the prefix itself, where it can, so the whole text is sent unchanged.
+   */
+  | { kind: 'inline-effort'; level: string; rest: string; text: string }
 
 export function findCommand(name: string): CommandSpec | null {
   const wanted = name.toLowerCase()
@@ -84,6 +102,15 @@ export function parseInput(input: string): Parsed {
   const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(input)
   const token = match?.[1]
   if (!match || token === undefined) return { kind: 'text', text: input }
+  const inline = /^effort:(\S+)$/i.exec(token)
+  if (inline?.[1]) {
+    return {
+      kind: 'inline-effort',
+      level: inline[1].toLowerCase(),
+      rest: (match[2] ?? '').trim(),
+      text: input,
+    }
+  }
   const spec = findCommand(token)
   if (!spec) return { kind: 'unknown', name: token }
   return { kind: 'command', name: spec.name, arg: (match[2] ?? '').trim() }
@@ -121,6 +148,21 @@ export function statusText(
     `Model: ${identity.model ?? 'default'} (${source(state.overrides.model !== null, identity.model !== null)})`,
     `Mode: ${mode}`,
   ]
+  const thinking = state.thinking
+  if (!thinking) {
+    lines.push('Reasoning effort: not adjustable on this daemon')
+  } else {
+    lines.push(
+      effortAdjustable(state)
+        ? `Reasoning effort: ${thinking.currentLevel ?? 'default'} (${sourceWords(thinking.levelSource)}; accepts ${thinking.levels.join(', ')})`
+        : `Reasoning effort: not adjustable for ${thinking.model || 'this model'}`,
+    )
+    if (displayAdjustable(state)) {
+      lines.push(
+        `Thinking display: ${thinking.currentDisplay ?? 'default'} (${sourceWords(thinking.displaySource)}; accepts ${thinking.displays.join(', ')})`,
+      )
+    }
+  }
   if (info) {
     lines.push(`Daemon: v${info.serverVersion}, pid ${info.serverPid}, ${info.endpoint}`)
   }
