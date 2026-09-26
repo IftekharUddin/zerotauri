@@ -10,7 +10,7 @@ import { SessionRail } from './features/SessionRail'
 import { Setup } from './features/Setup'
 import { StatusBar } from './features/StatusBar'
 import { Transcript } from './features/Transcript'
-import { GOAL_MAX_TURNS } from './lib/goal'
+import { GOAL_MAX_TURNS, formatGoalLimit, parseGoalLimit, type GoalLimit } from './lib/goal'
 import * as ipc from './lib/ipc'
 import {
   MODE_BUSY,
@@ -46,10 +46,12 @@ import {
   browserStore,
   describeRestore,
   forgetSettings,
+  loadGoalLimit,
   loadSettings,
   patchMatches,
   pruneSettings,
   reapplyPlan,
+  saveGoalLimit,
   savedFromState,
   settingsFromOverrides,
   updateSettings,
@@ -69,6 +71,7 @@ import {
   pushNotice,
   startTurn,
   stopGoal,
+  withGoalLimit,
   withMode,
   type SessionState,
 } from './lib/session'
@@ -146,6 +149,10 @@ export default function App() {
   const agentsRef = useRef(agents)
   agentsRef.current = agents
   const store = useMemo(() => browserStore(), [])
+  // App-wide, not per session: how many turns a goal may run on its own.
+  const [goalLimit, setGoalLimitState] = useState<GoalLimit>(() => loadGoalLimit(store))
+  const goalLimitRef = useRef(goalLimit)
+  goalLimitRef.current = goalLimit
   // Assigned once `restoreSettings` exists; opening and reconnecting call it.
   const restoreRef = useRef<
     (target: SessionState, saved: SavedSettings | null, running: boolean) => Promise<void>
@@ -648,7 +655,9 @@ export default function App() {
       if (configuringRef.current) return false
       const sessionId = current.sessionId
       const enter = (s: SessionState) =>
-        s.sessionId === sessionId ? pushNotice(withMode(s, next), modeNotice(next, GOAL_MAX_TURNS)) : s
+        s.sessionId === sessionId
+          ? pushNotice(withMode(s, next), modeNotice(next, goalLimitRef.current))
+          : s
 
       if (!modeChangeNeedsDaemon(current.mode, next)) {
         mutate(enter)
@@ -935,7 +944,7 @@ export default function App() {
         notify(current.sessionId, 'A goal is already running.', 'warn')
         return
       }
-      const step = beginGoal(current, objective)
+      const step = beginGoal(current, objective, goalLimitRef.current)
       submit(step.state, step.sent, false)
     },
     [notify, setMode, submit],
@@ -952,6 +961,29 @@ export default function App() {
     )
   }, [notify, store])
 
+  /** Set the goal turn limit for later goals and for the one running now. */
+  const setGoalLimit = useCallback(
+    (limit: GoalLimit) => {
+      setGoalLimitState(limit)
+      saveGoalLimit(store, limit)
+      const current = sessionRef.current
+      if (!current) return
+      mutate((s) => withGoalLimit(s, limit))
+      notify(
+        current.sessionId,
+        limit === null
+          ? 'Goal turn limit removed. A goal now runs until the agent reports done or blocked, or you stop it. Watch the turn count in the mode pill.'
+          : `Goal turn limit set to ${formatGoalLimit(limit)}.`,
+        limit === null ? 'warn' : 'info',
+      )
+    },
+    [mutate, notify, store],
+  )
+
+  const toggleGoalLimit = useCallback(() => {
+    setGoalLimit(goalLimitRef.current === null ? GOAL_MAX_TURNS : null)
+  }, [setGoalLimit])
+
   /**
    * Run a slash command. Returns false when it could not run as typed, so
    * the draft is kept for fixing. Commands do their own busy checks, which
@@ -967,7 +999,7 @@ export default function App() {
           notify(id, helpText())
           return true
         case 'status':
-          notify(id, statusText(current, infoRef.current, planSupportRef.current))
+          notify(id, statusText(current, infoRef.current, planSupportRef.current, goalLimitRef.current))
           return true
         case 'mode': {
           const mode = parseMode(arg)
@@ -1046,6 +1078,22 @@ export default function App() {
         case 'changes':
           setShowChanges((v) => !v)
           return true
+        case 'limit': {
+          if (!arg) {
+            notify(
+              id,
+              `Goal turn limit: ${formatGoalLimit(goalLimitRef.current)}. Use /limit none, or /limit <turns> from 1 to 10000.`,
+            )
+            return true
+          }
+          const limit = parseGoalLimit(arg)
+          if (limit === undefined) {
+            notify(id, 'Usage: /limit none, or /limit <turns> from 1 to 10000.', 'warn')
+            return false
+          }
+          setGoalLimit(limit)
+          return true
+        }
         case 'forget':
           forgetSaved()
           return true
@@ -1068,6 +1116,7 @@ export default function App() {
       openEffortPicker,
       openModelPicker,
       openProviderPicker,
+      setGoalLimit,
       setMode,
       setThinkingByName,
       startGoalWith,
@@ -1127,7 +1176,7 @@ export default function App() {
     // A goal between turns is about to send its own continuation.
     if (current.goal) return
     if (current.mode === 'goal') {
-      const step = beginGoal(current, body)
+      const step = beginGoal(current, body, goalLimitRef.current)
       submit(step.state, prefix + step.sent, true)
       return
     }
@@ -1288,6 +1337,15 @@ export default function App() {
         run: () => mutate((s) => stopGoal(s, 'Goal stopped. The current turn still finishes.')),
       },
       {
+        id: 'goal-limit',
+        label:
+          goalLimit === null
+            ? `Goal turn limit: none. Set it back to ${GOAL_MAX_TURNS} turns`
+            : `Goal turn limit: ${formatGoalLimit(goalLimit)}. Remove the limit`,
+        enabled: !!session,
+        run: toggleGoalLimit,
+      },
+      {
         id: 'model',
         label: 'Change model…',
         hint: isMac ? '⇧⌘M' : 'Ctrl+Shift+M',
@@ -1373,6 +1431,7 @@ export default function App() {
       closeSession,
       cycleMode,
       forgetSaved,
+      goalLimit,
       info,
       install,
       mutate,
@@ -1387,6 +1446,7 @@ export default function App() {
       showChanges,
       showRail,
       showThoughts,
+      toggleGoalLimit,
     ],
   )
 
@@ -1395,7 +1455,9 @@ export default function App() {
   const placeholder = !session
     ? undefined
     : session.goal
-      ? `Goal turn ${session.goal.turn} of ${session.goal.max} is running. Esc stops the turn and the goal.`
+      ? session.goal.max === null
+        ? `Goal turn ${session.goal.turn} is running, with no turn limit. Esc stops the turn and the goal.`
+        : `Goal turn ${session.goal.turn} of ${session.goal.max} is running. Esc stops the turn and the goal.`
       : session.mode === 'goal'
         ? `Describe the objective. ${session.agentAlias} keeps working until it reports done or blocked.`
         : session.mode === 'plan'
@@ -1571,8 +1633,10 @@ export default function App() {
                     session={session}
                     caps={caps}
                     planSupport={planSupport}
+                    goalLimit={goalLimit}
                     locked={busy || configuring}
                     onCycleMode={cycleMode}
+                    onToggleGoalLimit={toggleGoalLimit}
                     onProvider={openProviderPicker}
                     onModel={() => openModelPicker()}
                     onEffort={openEffortPicker}

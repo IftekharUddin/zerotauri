@@ -5,7 +5,7 @@
 // command runs locally and is never sent to the agent; an unknown one is
 // reported rather than sent, and `//` sends a literal leading slash.
 
-import { goalLabel } from './goal.ts'
+import { GOAL_MAX_TURNS, formatGoalLimit, goalLabel, type GoalLimit } from './goal.ts'
 import type { PlanSupport } from './modes.ts'
 import { displayAdjustable, effectiveIdentity, effortAdjustable, sourceWords } from './overrides.ts'
 import type { SessionState } from './session.ts'
@@ -76,6 +76,13 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   { name: 'sessions', aliases: [], summary: 'Show or hide the session rail.' },
   { name: 'changes', aliases: [], summary: 'Show or hide the Changes panel.' },
+  {
+    name: 'limit',
+    aliases: ['goal-limit'],
+    args: '[turns|none]',
+    summary:
+      'Show or set how many turns a goal may run. none removes the limit. Applies to the running goal and to later ones.',
+  },
   { name: 'forget', aliases: [], summary: 'Forget the settings saved for this session.' },
 ]
 
@@ -129,6 +136,7 @@ export function statusText(
   state: SessionState,
   info: ConnectionInfo | null,
   planSupport: PlanSupport,
+  goalLimit: GoalLimit = GOAL_MAX_TURNS,
 ): string {
   const identity = effectiveIdentity(state)
   const source = (overridden: boolean, known: boolean) =>
@@ -147,6 +155,7 @@ export function statusText(
     `Provider: ${identity.provider ?? 'default'} (${source(state.overrides.modelProvider !== null, identity.provider !== null)})`,
     `Model: ${identity.model ?? 'default'} (${source(state.overrides.model !== null, identity.model !== null)})`,
     `Mode: ${mode}`,
+    `Goal turn limit: ${formatGoalLimit(goalLimit)}`,
   ]
   const thinking = state.thinking
   if (!thinking) {

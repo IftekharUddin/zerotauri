@@ -199,10 +199,17 @@ the status bar show the current mode.
   pane. Your next message becomes the objective. The agent is asked to end
   each reply with `[GOAL: done]`, `[GOAL: continue]`, or
   `[GOAL: blocked <reason>]`, and the app sends a continuation after each
-  reply until the agent reports done or blocked, or ten turns have run. Esc
-  stops the current turn and the goal; "Stop the goal after this turn" in the
-  palette lets the turn finish first. The loop lives in this window, so it
-  stops if the window closes or the daemon connection drops.
+  reply until the agent reports done or blocked, or the turn limit is
+  reached. Esc stops the current turn and the goal; "Stop the goal after this
+  turn" in the palette lets the turn finish first. The loop lives in this
+  window, so it stops if the window closes or the daemon connection drops.
+
+The turn limit is ten by default. In goal mode a limit pill sits next to the
+mode pill: click it to switch between the limit and none, or use `/limit
+<turns>`, `/limit none`, or the palette. It is an app-wide preference, kept in
+local storage, and it applies to a goal already running. With no limit, a
+goal runs until the agent reports done or blocked, or you stop it, so keep an
+eye on the turn count in the mode pill and in the status bar.
 
 A mode change waits for a running turn to end, because the daemon refuses one
 mid-turn.
@@ -219,6 +226,7 @@ leading slash.
 | `/status` | Show the agent, provider, model, mode, effort, and daemon, and where each setting comes from |
 | `/mode build\|plan\|goal`, `/build`, `/plan` | Switch mode |
 | `/goal [objective]` | Switch to goal mode, and start the goal when an objective is given |
+| `/limit [turns\|none]`, `/goal-limit` | Show or set how many turns a goal may run |
 | `/model [id]` | Pick a model, or set one by id |
 | `/provider [ref]`, `/model-provider` | Pick a provider, or set one by reference |
 | `/effort [level\|default]`, `/think` | Pick or set the reasoning effort |

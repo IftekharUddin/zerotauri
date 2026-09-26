@@ -8,6 +8,7 @@
 // combination the daemon accepted once. A goal run is never stored; goal
 // mode is.
 
+import { GOAL_LIMIT_MAX, GOAL_MAX_TURNS, type GoalLimit } from './goal.ts'
 import { MODES, type Mode, type PlanSupport } from './modes.ts'
 import type { OverridePatch, SessionOverrides } from './types.ts'
 
@@ -235,6 +236,38 @@ export function describeRestore(patch: OverridePatch, dropped: readonly string[]
     ? `Restored this session's settings: ${kept.join(', ')}.`
     : "None of this session's saved settings could be restored."
   return ignored.length ? `${head} This daemon ignored: ${ignored.join(', ')}.` : head
+}
+
+const GOAL_LIMIT_KEY = 'zerotauri:prefs:v1:goal-limit'
+
+/**
+ * The goal turn limit, an app-wide preference. It widens what a goal may do
+ * on its own, so anything unreadable falls back to the default rather than
+ * to "no limit".
+ */
+export function loadGoalLimit(store: Store | null): GoalLimit {
+  if (!store) return GOAL_MAX_TURNS
+  try {
+    const raw = store.getItem(GOAL_LIMIT_KEY)
+    if (raw === null) return GOAL_MAX_TURNS
+    const value: unknown = JSON.parse(raw)
+    if (value === null) return null
+    if (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= GOAL_LIMIT_MAX) {
+      return value
+    }
+    return GOAL_MAX_TURNS
+  } catch {
+    return GOAL_MAX_TURNS
+  }
+}
+
+export function saveGoalLimit(store: Store | null, limit: GoalLimit): void {
+  try {
+    if (limit === GOAL_MAX_TURNS) store?.removeItem(GOAL_LIMIT_KEY)
+    else store?.setItem(GOAL_LIMIT_KEY, JSON.stringify(limit))
+  } catch {
+    // The limit still applies for this run of the app.
+  }
 }
 
 /** `localStorage` behind the `Store` interface, or `null` where it is unavailable. */

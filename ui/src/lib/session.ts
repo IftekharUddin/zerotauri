@@ -12,6 +12,8 @@ import {
   goalPreamble,
   parseGoalMarker,
   stripGoalWrapper,
+  formatGoalLimit,
+  type GoalLimit,
   type GoalRun,
 } from './goal.ts'
 import type { Mode } from './modes.ts'
@@ -405,16 +407,36 @@ export function withMode(state: SessionState, mode: Mode): SessionState {
 export function beginGoal(
   state: SessionState,
   objective: string,
+  limit: GoalLimit = GOAL_MAX_TURNS,
 ): { state: SessionState; sent: string } {
   const started = startTurn(state, objective)
-  const run: GoalRun = { objective, turn: 1, max: GOAL_MAX_TURNS, next: null }
+  const run: GoalRun = { objective, turn: 1, max: limit, next: null }
+  const notice =
+    limit === null
+      ? 'Goal started with no turn limit. This app keeps the agent going until it reports done or blocked, or you stop it.'
+      : `Goal started. This app keeps the agent going for up to ${formatGoalLimit(limit)}, until it reports done or blocked.`
   return {
-    state: pushNotice(
-      { ...started, goal: run },
-      `Goal started. This app keeps the agent going for up to ${GOAL_MAX_TURNS} turns, until it reports done or blocked.`,
-    ),
+    state: pushNotice({ ...started, goal: run }, notice),
     sent: goalPreamble(objective),
   }
+}
+
+const capNotice = (turn: number, max: number): string =>
+  `Goal stopped at turn ${turn}: the limit is ${formatGoalLimit(max)} and the agent has not reported done.`
+
+/**
+ * Change the turn limit of a running goal. A limit at or below the turn
+ * already reached ends a goal that is waiting to continue; one still in a
+ * turn ends when that turn completes.
+ */
+export function withGoalLimit(state: SessionState, limit: GoalLimit): SessionState {
+  const run = state.goal
+  if (!run || run.max === limit) return state
+  const updated: SessionState = { ...state, goal: { ...run, max: limit } }
+  if (limit !== null && run.turn >= limit && run.next === 'continue') {
+    return { ...pushNotice(updated, capNotice(run.turn, limit), 'warn'), goal: null }
+  }
+  return updated
 }
 
 /** The next goal turn, when the last one asked for it. */
@@ -462,11 +484,8 @@ function settleGoal(
     const text = marker.reason ? `Goal blocked: ${marker.reason}` : 'Goal blocked.'
     return { ...pushNotice(state, text, 'warn'), goal: null }
   }
-  if (run.turn >= run.max) {
-    return {
-      ...pushNotice(state, `Goal stopped after ${run.max} turns without a done marker.`, 'warn'),
-      goal: null,
-    }
+  if (run.max !== null && run.turn >= run.max) {
+    return { ...pushNotice(state, capNotice(run.turn, run.max), 'warn'), goal: null }
   }
   return { ...state, goal: { ...run, next: 'continue' } }
 }

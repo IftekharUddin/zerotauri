@@ -2,9 +2,13 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
+  GOAL_LIMIT_MAX,
   GOAL_MAX_TURNS,
+  formatGoalLimit,
   goalContinuation,
+  goalLabel,
   goalPreamble,
+  parseGoalLimit,
   parseGoalMarker,
   stripGoalWrapper,
 } from './goal.ts'
@@ -18,6 +22,7 @@ import {
   loadHistory,
   startTurn,
   stopGoal,
+  withGoalLimit,
   withMode,
   type SessionState,
 } from './session.ts'
@@ -181,7 +186,11 @@ test('the loop stops at the turn cap', () => {
   state = { ...state, goal: { objective: 'do it', turn: GOAL_MAX_TURNS, max: GOAL_MAX_TURNS, next: null } }
   state = complete(applyUpdate(state, reply('[GOAL: continue]')))
   assert.equal(state.goal, null)
-  assert.ok(notices(state).some((t) => t.includes(`after ${GOAL_MAX_TURNS} turns`)))
+  assert.ok(
+    notices(state).includes(
+      `Goal stopped at turn ${GOAL_MAX_TURNS}: the limit is ${GOAL_MAX_TURNS} turns and the agent has not reported done.`,
+    ),
+  )
 })
 
 test('cancelled and failed turns stop the loop', () => {
@@ -236,4 +245,74 @@ test('an ordinary turn in build mode is untouched by the goal logic', () => {
   state = complete(applyUpdate(state, reply('[GOAL: continue]')))
   assert.equal(state.goal, null)
   assert.equal(state.phase, 'idle')
+})
+
+// ── The turn limit ───────────────────────────────────────────────────
+
+test('a limit is a number of turns or none, and nothing else', () => {
+  assert.equal(parseGoalLimit('none'), null)
+  assert.equal(parseGoalLimit(' Unlimited '), null)
+  assert.equal(parseGoalLimit('off'), null)
+  assert.equal(parseGoalLimit('25'), 25)
+  assert.equal(parseGoalLimit(String(GOAL_LIMIT_MAX)), GOAL_LIMIT_MAX)
+  assert.equal(parseGoalLimit('0'), undefined)
+  assert.equal(parseGoalLimit('2.5'), undefined)
+  assert.equal(parseGoalLimit('-3'), undefined)
+  assert.equal(parseGoalLimit(String(GOAL_LIMIT_MAX + 1)), undefined)
+  assert.equal(parseGoalLimit('lots'), undefined)
+  assert.equal(formatGoalLimit(null), 'no limit')
+  assert.equal(formatGoalLimit(1), '1 turn')
+  assert.equal(formatGoalLimit(10), '10 turns')
+})
+
+test('a goal with no limit keeps going past the default cap', () => {
+  let state = beginGoal(fresh(), 'do it', null).state
+  assert.ok(notices(state).some((t) => t.startsWith('Goal started with no turn limit.')))
+  state = { ...state, goal: { ...state.goal!, turn: GOAL_MAX_TURNS * 5 } }
+  state = complete(applyUpdate(state, reply('[GOAL: continue]')))
+  assert.equal(state.goal?.next, 'continue')
+  assert.equal(goalLabel(state.goal!), `goal ${GOAL_MAX_TURNS * 5}/∞`)
+  const step = continueGoal(state)
+  assert.ok(step)
+  const last = step.state.entries.at(-1)
+  assert.equal(last?.kind === 'user' && last.text, `continue (goal turn ${GOAL_MAX_TURNS * 5 + 1})`)
+})
+
+test('a smaller limit is honoured by the goal it was started with', () => {
+  let state = beginGoal(fresh(), 'do it', 2).state
+  state = complete(applyUpdate(state, reply('[GOAL: continue]')))
+  state = continueGoal(state)?.state ?? state
+  state = complete(applyUpdate(state, reply('[GOAL: continue]')))
+  assert.equal(state.goal, null)
+  assert.ok(notices(state).includes('Goal stopped at turn 2: the limit is 2 turns and the agent has not reported done.'))
+})
+
+test('changing the limit reaches a running goal', () => {
+  let state = beginGoal(fresh(), 'do it').state
+  state = withGoalLimit(state, null)
+  assert.equal(state.goal?.max, null)
+  state = withGoalLimit(state, 3)
+  assert.equal(state.goal?.max, 3)
+  assert.equal(withGoalLimit(state, 3), state, 'the same limit changes nothing')
+  const idle = fresh()
+  assert.equal(withGoalLimit(idle, null), idle, 'no run, nothing to change')
+})
+
+test('lowering the limit below the turn reached ends a goal that is waiting', () => {
+  let state = beginGoal(fresh(), 'do it', null).state
+  state = { ...state, goal: { ...state.goal!, turn: 7 } }
+  state = complete(applyUpdate(state, reply('[GOAL: continue]')))
+  assert.equal(state.goal?.next, 'continue')
+  state = withGoalLimit(state, 5)
+  assert.equal(state.goal, null)
+  assert.ok(notices(state).some((t) => t.startsWith('Goal stopped at turn 7: the limit is 5 turns')))
+})
+
+test('lowering the limit during a turn ends the goal when that turn completes', () => {
+  let state = beginGoal(fresh(), 'do it', null).state
+  state = { ...state, goal: { ...state.goal!, turn: 7 } }
+  state = withGoalLimit(state, 5)
+  assert.equal(state.goal?.max, 5, 'the run continues until its turn ends')
+  state = complete(applyUpdate(state, reply('[GOAL: continue]')))
+  assert.equal(state.goal, null)
 })

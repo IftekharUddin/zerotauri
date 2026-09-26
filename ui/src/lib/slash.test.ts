@@ -114,7 +114,8 @@ test('status names where each setting comes from', () => {
     }),
     overrides: { ...NO_OVERRIDES, model: 'claude-fable-5-1' },
   }
-  const text = statusText(state, null, 'unsupported')
+  const text = statusText(state, null, 'unsupported', null)
+  assert.match(text, /Goal turn limit: no limit/)
   assert.match(text, /Provider: anthropic\.default \(configured default\)/)
   assert.match(text, /Model: claude-fable-5-1 \(set for this session\)/)
   assert.match(text, /Mode: build \(this daemon does not enforce plan mode\)/)

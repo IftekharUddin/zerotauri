@@ -5,6 +5,8 @@
 // this app's own loop and runs the agent in build mode, so switching between
 // build and goal never reaches the daemon.
 
+import { formatGoalLimit, type GoalLimit } from './goal.ts'
+
 export type Mode = 'build' | 'plan' | 'goal'
 
 /**
@@ -50,9 +52,13 @@ export const MODE_BUSY =
   'A turn is running. Wait for it to finish, or stop it, before switching mode.'
 
 /** The transcript line recorded when a session changes mode. */
-export function modeNotice(mode: Mode, goalMaxTurns: number): string {
+export function modeNotice(mode: Mode, goalLimit: GoalLimit): string {
   if (mode === 'goal') {
-    return `Goal mode. ${MODE_SUMMARY.goal} It stops after ${goalMaxTurns} turns at most, and when this window closes.`
+    const limit =
+      goalLimit === null
+        ? 'There is no turn limit: it runs until the agent reports done or blocked, or you stop it.'
+        : `It stops after ${formatGoalLimit(goalLimit)} at most.`
+    return `Goal mode. ${MODE_SUMMARY.goal} ${limit} It also stops when this window closes.`
   }
   return `${mode === 'plan' ? 'Plan' : 'Build'} mode. ${MODE_SUMMARY[mode]}`
 }

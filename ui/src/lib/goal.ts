@@ -7,8 +7,33 @@
 // the turn cap is reached. Model-facing text is not localized, because the
 // marker is parsed, not read.
 
-/** A model that never reports done would otherwise run until someone noticed. */
+/**
+ * The default turn limit. A model that never reports done would otherwise
+ * run until someone noticed. The limit can be raised or removed; a goal
+ * with no limit runs until the agent reports done or blocked, a turn fails
+ * or is cancelled, the connection drops, or the window closes.
+ */
 export const GOAL_MAX_TURNS = 10
+
+/** Most turns a limit may name. Past this, "none" is the honest setting. */
+export const GOAL_LIMIT_MAX = 10_000
+
+/** How many turns a goal may run; `null` is no limit. */
+export type GoalLimit = number | null
+
+export const formatGoalLimit = (limit: GoalLimit): string =>
+  limit === null ? 'no limit' : limit === 1 ? '1 turn' : `${limit} turns`
+
+const NO_LIMIT_WORDS = new Set(['none', 'unlimited', 'off', 'infinite', 'infinity', '∞'])
+
+/** Read a limit as typed. `undefined` means the text is not a limit. */
+export function parseGoalLimit(text: string): GoalLimit | undefined {
+  const word = text.trim().toLowerCase()
+  if (NO_LIMIT_WORDS.has(word)) return null
+  if (!/^\d{1,5}$/.test(word)) return undefined
+  const turns = Number(word)
+  return turns >= 1 && turns <= GOAL_LIMIT_MAX ? turns : undefined
+}
 
 const PREAMBLE_HEAD = 'You are working toward the objective below. Work on it now.\n'
 const OBJECTIVE_MARK = '\n\nObjective:\n'
@@ -74,15 +99,15 @@ export function parseGoalMarker(reply: string): GoalMarker {
 export interface GoalRun {
   objective: string
   turn: number
-  max: number
+  max: GoalLimit
   next: 'continue' | null
 }
 
-export const goalLabel = (run: GoalRun): string => `goal ${run.turn}/${run.max}`
+export const goalLabel = (run: GoalRun): string => `goal ${run.turn}/${run.max ?? '∞'}`
 
 /** What the transcript shows for a continuation this app sent. */
-export const continuationLabel = (turn: number, max: number): string =>
-  `continue (goal turn ${turn}/${max})`
+export const continuationLabel = (turn: number, max: GoalLimit): string =>
+  `continue (goal turn ${turn}${max === null ? '' : `/${max}`})`
 
 /**
  * The words the user typed, for a goal prompt restored from history. The

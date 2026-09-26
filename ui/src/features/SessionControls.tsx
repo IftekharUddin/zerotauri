@@ -1,4 +1,4 @@
-import { goalLabel } from '../lib/goal'
+import { formatGoalLimit, goalLabel, type GoalLimit } from '../lib/goal'
 import { MODE_SUMMARY, type PlanSupport } from '../lib/modes'
 import {
   displayAdjustable,
@@ -22,8 +22,10 @@ export function SessionControls({
   session,
   caps,
   planSupport,
+  goalLimit,
   locked,
   onCycleMode,
+  onToggleGoalLimit,
   onProvider,
   onModel,
   onEffort,
@@ -32,8 +34,10 @@ export function SessionControls({
   session: SessionState
   caps: Caps
   planSupport: PlanSupport
+  goalLimit: GoalLimit
   locked: boolean
   onCycleMode: () => void
+  onToggleGoalLimit: () => void
   onProvider: () => void
   onModel: () => void
   onEffort: () => void
@@ -55,6 +59,17 @@ export function SessionControls({
         <span className="label">mode</span>
         <span className="value">{session.goal ? goalLabel(session.goal) : session.mode}</span>
       </button>
+      {session.mode === 'goal' && (
+        <button
+          type="button"
+          className="chip control"
+          onClick={onToggleGoalLimit}
+          title="How many turns a goal may run before this app stops it. Click to switch between the limit and none; /limit <turns> sets another number."
+        >
+          <span className="label">limit</span>
+          <span className="value">{formatGoalLimit(session.goal ? session.goal.max : goalLimit)}</span>
+        </button>
+      )}
       {caps.configure && caps.providers && (
         <button
           type="button"

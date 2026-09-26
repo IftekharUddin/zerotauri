@@ -2,14 +2,17 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { NO_OVERRIDES } from './overrides.ts'
+import { GOAL_MAX_TURNS } from './goal.ts'
 import {
   SETTINGS_MAX_AGE_MS,
   describeRestore,
   forgetSettings,
+  loadGoalLimit,
   loadSettings,
   patchMatches,
   pruneSettings,
   reapplyPlan,
+  saveGoalLimit,
   settingsFromOverrides,
   settingsKey,
   updateSettings,
@@ -166,4 +169,22 @@ test('a restore notice never claims a setting the daemon dropped', () => {
     describeRestore({ thinkingLevel: 'high' }, ['thinking_level']),
     "None of this session's saved settings could be restored. This daemon ignored: effort high.",
   )
+})
+
+test('the goal limit round-trips, and anything unreadable is the default, never none', () => {
+  const store = memory()
+  assert.equal(loadGoalLimit(store), GOAL_MAX_TURNS)
+  saveGoalLimit(store, null)
+  assert.equal(loadGoalLimit(store), null)
+  saveGoalLimit(store, 250)
+  assert.equal(loadGoalLimit(store), 250)
+  saveGoalLimit(store, GOAL_MAX_TURNS)
+  assert.equal(store.data.size, 0, 'the default is not stored')
+  store.setItem('zerotauri:prefs:v1:goal-limit', '"unlimited"')
+  assert.equal(loadGoalLimit(store), GOAL_MAX_TURNS)
+  store.setItem('zerotauri:prefs:v1:goal-limit', '{bad')
+  assert.equal(loadGoalLimit(store), GOAL_MAX_TURNS)
+  store.setItem('zerotauri:prefs:v1:goal-limit', '0')
+  assert.equal(loadGoalLimit(store), GOAL_MAX_TURNS)
+  assert.equal(loadGoalLimit(null), GOAL_MAX_TURNS)
 })
