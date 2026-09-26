@@ -33,6 +33,20 @@ import {
   type Caps,
 } from './lib/overrides'
 import {
+  browserStore,
+  describeRestore,
+  forgetSettings,
+  loadSettings,
+  patchMatches,
+  pruneSettings,
+  reapplyPlan,
+  savedFromState,
+  settingsFromOverrides,
+  updateSettings,
+  type SavedSettings,
+  type SettingsChange,
+} from './lib/prefs'
+import {
   applyUpdate,
   beginGoal,
   clearApproval,
@@ -111,8 +125,13 @@ export default function App() {
   const capsRef = useRef<Caps>(caps)
   capsRef.current = caps
   const planSupportRef = useRef<PlanSupport>('unknown')
-  // Set after `setMode` exists; the reconnect listener below calls it.
-  const restoreModeRef = useRef<(sessionId: string, mode: Mode) => void>(() => {})
+  const infoRef = useRef(info)
+  infoRef.current = info
+  const store = useMemo(() => browserStore(), [])
+  // Assigned once `restoreSettings` exists; opening and reconnecting call it.
+  const restoreRef = useRef<
+    (target: SessionState, saved: SavedSettings | null, running: boolean) => Promise<void>
+  >(async () => {})
 
   // Changes apply to the ref first, then publish to React. Every write goes
   // through here or `install`, so the ref is always the latest state and a
@@ -146,6 +165,19 @@ export default function App() {
     },
     [mutate],
   )
+
+  /** Remember what the daemon confirmed, so a reopened session can get it back. */
+  const persist = useCallback(
+    (sessionId: string, change: SettingsChange) => {
+      const endpoint = infoRef.current?.endpoint
+      if (endpoint) updateSettings(store, endpoint, sessionId, change)
+    },
+    [store],
+  )
+
+  useEffect(() => {
+    pruneSettings(store)
+  }, [store])
 
   /** Read the configured provider and model a session falls back to. */
   const loadIdentity = useCallback(
@@ -270,19 +302,18 @@ export default function App() {
               branch: reopened.branch,
               hash: reopened.hash,
               plan: reopened.plan as never,
-              // Goal is this app's own mode; plan is re-sent below, because
-              // the daemon may have restarted and forgotten it.
-              mode: open.mode === 'goal' ? 'goal' : 'build',
             }),
             reopened.messages,
           )
           install(rebuilt)
-          void loadIdentity(rebuilt)
           if (open.goal) {
             notify(rebuilt.sessionId, 'Goal stopped: the connection to the daemon dropped during the run.', 'warn')
           }
-          if (open.mode === 'plan') restoreModeRef.current(rebuilt.sessionId, 'plan')
-          if (reopened.state === 'running') setRecovery(reopened.sessionId)
+          const running = reopened.state === 'running'
+          if (running) setRecovery(reopened.sessionId)
+          // The daemon may have restarted and forgotten everything, so send
+          // what this window last had confirmed.
+          void restoreRef.current(rebuilt, savedFromState(open.overrides, open.mode), running)
         } catch (e) {
           setError(String(e))
         }
@@ -296,7 +327,7 @@ export default function App() {
       active = false
       stop?.()
     }
-  }, [install, loadIdentity, notify])
+  }, [install, notify])
 
   // ── Session actions ─────────────────────────────────────────────
   const openSession = useCallback(
@@ -332,9 +363,13 @@ export default function App() {
           }),
           opened.messages,
         )
+        const endpoint = infoRef.current?.endpoint
+        const saved =
+          request.sessionId && endpoint ? loadSettings(store, endpoint, opened.sessionId) : null
         install(next)
-        void loadIdentity(next)
-        if (opened.state === 'running') setRecovery(opened.sessionId)
+        const running = opened.state === 'running'
+        if (running) setRecovery(opened.sessionId)
+        void restoreRef.current(next, saved, running)
         await refreshSessions()
       } catch (e) {
         setError(String(e))
@@ -342,7 +377,7 @@ export default function App() {
         setOpening(false)
       }
     },
-    [install, loadIdentity, refreshSessions],
+    [install, refreshSessions, store],
   )
 
   /**
@@ -466,6 +501,7 @@ export default function App() {
           reset,
         })
         mutate((s) => applyConfigureEcho(s, patch, result))
+        persist(current.sessionId, settingsFromOverrides(result.overrides))
         const said = describeChange(patch, result)
         if (said) notify(current.sessionId, said)
         return result
@@ -476,7 +512,7 @@ export default function App() {
         setConfiguringFlag(false)
       }
     },
-    [mutate, notify, setConfiguringFlag],
+    [mutate, notify, persist, setConfiguringFlag],
   )
 
   /** Settings pickers open only on an idle session the daemon can configure. */
@@ -568,6 +604,7 @@ export default function App() {
 
       if (!modeChangeNeedsDaemon(current.mode, next)) {
         mutate(enter)
+        persist(sessionId, { mode: next })
         return true
       }
       if (next === 'plan' && (!capsRef.current.configure || planSupportRef.current === 'unsupported')) {
@@ -580,6 +617,7 @@ export default function App() {
       try {
         const result = await ipc.sessionConfigure({ sessionId, overrides: requested })
         mutate((s) => applyConfigureEcho(s, requested, result))
+        persist(sessionId, settingsFromOverrides(result.overrides))
         // A daemon without plan mode drops the field instead of refusing it.
         if (result.droppedFields.includes('mode')) {
           updatePlanSupport('unsupported')
@@ -591,6 +629,7 @@ export default function App() {
           updatePlanSupport('supported')
         }
         mutate(enter)
+        persist(sessionId, { mode: next })
         return true
       } catch (e) {
         notify(sessionId, configureFailureText(e), 'error')
@@ -599,7 +638,7 @@ export default function App() {
         setConfiguringFlag(false)
       }
     },
-    [mutate, notify, setConfiguringFlag, updatePlanSupport],
+    [mutate, notify, persist, setConfiguringFlag, updatePlanSupport],
   )
 
   const cycleMode = useCallback(() => {
@@ -607,9 +646,81 @@ export default function App() {
     if (current) void setMode(nextMode(current.mode, planSupportRef.current))
   }, [setMode])
 
-  restoreModeRef.current = (sessionId, mode) => {
-    if (sessionRef.current?.sessionId === sessionId) void setMode(mode)
-  }
+  /**
+   * Put a reopened session back the way it was: one configure with the saved
+   * overrides, then the mode. A live reattach on a daemon that can report
+   * its overrides skips the configure when they are already in place, since
+   * a model override otherwise rebuilds the session's provider for nothing.
+   */
+  const restoreSettings = useCallback(
+    async (target: SessionState, saved: SavedSettings | null, running: boolean) => {
+      const sessionId = target.sessionId
+      const isOpen = () => sessionRef.current?.sessionId === sessionId
+      const plan = saved
+        ? reapplyPlan(saved, {
+            thinking: capsRef.current.thinkingOptions,
+            planSupport: planSupportRef.current,
+          })
+        : null
+
+      if (plan?.patch && capsRef.current.configure) {
+        const patch = plan.patch
+        setConfiguringFlag(true)
+        try {
+          const live = capsRef.current.thinkingOptions
+            ? await ipc.sessionThinkingOptions(sessionId).catch(() => null)
+            : null
+          if (live && patchMatches(patch, live.overrides)) {
+            mutate((s) => (s.sessionId === sessionId ? { ...s, overrides: { ...live.overrides } } : s))
+          } else {
+            const result = await ipc.sessionConfigure({ sessionId, overrides: patch })
+            mutate((s) => applyConfigureEcho(s, patch, result))
+            persist(sessionId, settingsFromOverrides(result.overrides))
+            notify(sessionId, describeRestore(patch))
+          }
+        } catch (e) {
+          notify(sessionId, `Could not restore this session's saved settings. ${configureFailureText(e)}`, 'warn')
+        } finally {
+          setConfiguringFlag(false)
+        }
+      }
+
+      if (!isOpen()) return
+      await loadIdentity(target, sessionRef.current?.overrides.modelProvider ?? null)
+
+      if (!plan || !isOpen()) return
+      if (plan.mode === 'goal') {
+        mutate((s) =>
+          s.sessionId === sessionId
+            ? pushNotice(withMode(s, 'goal'), 'Goal mode restored. Your next message becomes the objective.')
+            : s,
+        )
+      } else if (plan.mode === 'plan') {
+        if (running) {
+          notify(
+            sessionId,
+            'This session was in plan mode, but a turn is still running, so it is in build mode for now. Switch back with Shift+Tab once the turn ends.',
+            'warn',
+          )
+        } else {
+          await setMode('plan')
+        }
+      }
+    },
+    [loadIdentity, mutate, notify, persist, setConfiguringFlag, setMode],
+  )
+  restoreRef.current = restoreSettings
+
+  const forgetSaved = useCallback(() => {
+    const current = sessionRef.current
+    const endpoint = infoRef.current?.endpoint
+    if (!current || !endpoint) return
+    forgetSettings(store, endpoint, current.sessionId)
+    notify(
+      current.sessionId,
+      "Forgot this session's saved settings. The daemon keeps its current ones until it restarts or drops the session.",
+    )
+  }, [notify, store])
 
   // Drive the goal loop: a completed turn that asked to continue is followed
   // by the next one as soon as the session is idle and connected.
@@ -784,6 +895,12 @@ export default function App() {
         run: openProviderPicker,
       },
       {
+        id: 'forget-settings',
+        label: "Forget this session's saved settings",
+        enabled: !!session,
+        run: forgetSaved,
+      },
+      {
         id: 'thoughts',
         label: showThoughts ? 'Hide thinking' : 'Show thinking',
         run: () => setShowThoughts((v) => !v),
@@ -828,6 +945,7 @@ export default function App() {
       caps,
       closeSession,
       cycleMode,
+      forgetSaved,
       info,
       install,
       mutate,
