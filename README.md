@@ -70,7 +70,9 @@ installed, and at least one agent is enabled with a working provider key. If
 
 4. **Start a session.** Choose a folder with the picker and an agent from the
    list. Only enabled agents are offered, and a single enabled agent is
-   selected for you. Type what you want changed and press Enter.
+   selected for you. Type what you want changed and press Enter. The row
+   above the message box holds the session's mode, provider, and model; see
+   [Session settings](#session-settings) and [Modes](#modes).
 
 5. **Answer approvals as they come.** When a tool needs your say-so, a card
    appears with the daemon's countdown. Allow once, always allow, or reject,
@@ -142,6 +144,92 @@ Two things to know when both clients are open:
 Closing a session in the app removes it from the daemon's memory but keeps
 its transcript; it reappears in the rail and can be resumed later.
 
+## Session settings
+
+The row above the message box shows the open session's settings: its mode,
+provider, and model, and, on daemons that support them, its reasoning effort
+and thinking display. Click one to change it, or use the keys and commands
+below. A setting applies to this session only. A change is refused while a
+turn runs, and sending waits until the daemon confirms a change.
+
+- **Model and provider.** The provider list is the daemon's configured
+  providers. The model list is the daemon's catalogue for the session's
+  provider, and you can also type a model id that is not listed. Switching
+  provider without picking a model puts the session on that provider's
+  configured model, and that provider's model list opens next. The pill shows
+  the model the session is set to, or the configured default when nothing is
+  set.
+- **Reasoning effort and thinking display.** These need a daemon with
+  per-session thinking controls, which is not in a ZeroClaw release yet; it is
+  proposed in
+  [zeroclaw-labs/zeroclaw#10636](https://github.com/zeroclaw-labs/zeroclaw/pull/10636).
+  The choices are what the session's model accepts, so a model without an
+  adjustable depth shows no effort pill. Starting a message with
+  `/effort:high` uses that depth for that message only. Changing the model
+  puts the effort back to the default.
+- **Thoughts** is separate from both. It only shows or hides the thought text
+  the agent streams.
+
+The daemon keeps session settings in memory, so a daemon restart forgets
+them. ZeroTauri remembers what the daemon last confirmed for each session and
+sends it again when you reopen the session or the connection comes back. The
+settings are kept in the app's local storage, keyed by daemon socket and
+session id, and dropped after 90 days unused. `/forget`, or "Forget this
+session's saved settings" in the palette, clears them for one session.
+
+If zerocode changes the same live session, the last client to change it wins,
+and this window's pills stay stale until you reopen the session.
+
+## Modes
+
+Shift+Tab in the message box cycles build, plan, and goal. The mode pill and
+the status bar show the current mode.
+
+- **Build** is the agent's normal mode. It can use every tool it is allowed.
+- **Plan** is read-only, and the daemon enforces it: it refuses any tool that
+  could change files, run commands, or reach the network, the shell included,
+  before an approval card would appear. Plan mode needs a daemon that enforces
+  it, which is not in a ZeroClaw release yet. On a daemon without it, the app
+  says so the first time you ask, stays in build mode, and leaves plan out of
+  the cycle for that daemon.
+- **Goal** is a loop this app runs, with the same protocol as zerocode's Code
+  pane. Your next message becomes the objective. The agent is asked to end
+  each reply with `[GOAL: done]`, `[GOAL: continue]`, or
+  `[GOAL: blocked <reason>]`, and the app sends a continuation after each
+  reply until the agent reports done or blocked, or ten turns have run. Esc
+  stops the current turn and the goal; "Stop the goal after this turn" in the
+  palette lets the turn finish first. The loop lives in this window, so it
+  stops if the window closes or the daemon connection drops.
+
+A mode change waits for a running turn to end, because the daemon refuses one
+mid-turn.
+
+## Commands
+
+A message that starts with `/` runs a command instead of going to the agent.
+`/help` lists them in the app. Start a message with `//` to send a literal
+leading slash.
+
+| Command | What it does |
+|---|---|
+| `/help`, `/?` | List the commands |
+| `/status` | Show the agent, provider, model, mode, effort, and daemon, and where each setting comes from |
+| `/mode build\|plan\|goal`, `/build`, `/plan` | Switch mode |
+| `/goal [objective]` | Switch to goal mode, and start the goal when an objective is given |
+| `/model [id]` | Pick a model, or set one by id |
+| `/provider [ref]`, `/model-provider` | Pick a provider, or set one by reference |
+| `/effort [level\|default]`, `/think` | Pick or set the reasoning effort |
+| `/display [kind\|default]` | Pick or set the thinking display |
+| `/agent [alias]` | Open a new session with another agent in the same folder |
+| `/new`, `/new-session` | Start a new session |
+| `/close` | Close this session; its transcript is kept |
+| `/cancel`, `/stop` | Stop the current turn |
+| `/clear` | Clear this window's transcript and Changes; the daemon keeps its history |
+| `/thoughts`, `/thinking`, `/toggle-thinking` | Show or hide the agent's thoughts |
+| `/sessions` | Show or hide the session rail |
+| `/changes` | Show or hide the Changes panel |
+| `/forget` | Forget the settings saved for this session |
+
 ## Keys
 
 | Action | Key |
@@ -150,11 +238,19 @@ its transcript; it reappears in the rail and can be resumed later.
 | New line | Shift+Enter |
 | Stop the current turn | Esc |
 | Approve once / always / reject | Enter / A / R, with the message box not focused |
+| Cycle build, plan, and goal mode | Shift+Tab, in the message box |
+| Pick a model | Cmd+Shift+M or Ctrl+Shift+M |
+| Pick a provider | Cmd+Shift+P or Ctrl+Shift+P |
+| Pick a reasoning effort | Cmd+Shift+E or Ctrl+Shift+E |
+| New session | Cmd+N or Ctrl+N |
 | Action palette | Cmd+K or Ctrl+K |
 | Session rail | Cmd+B or Ctrl+B |
 | Changes panel | Cmd+J or Ctrl+J |
 
-Every action is also in the palette, so nothing is keyboard-only.
+Every action is also in the palette, so nothing is keyboard-only. Shift+Tab
+cycles modes only inside the message box, so it still moves focus backwards
+everywhere else. The pickers use Shift because Option with a letter types a
+character in a macOS text field.
 
 ## Reconnecting
 
@@ -196,6 +292,20 @@ environment variable did not reach the process. Use the `--config-dir` flag.
 **A message fails immediately with a provider error.** The agent's provider
 or key is the problem, not the app. The failure text is the daemon's own.
 Confirm with `zerocode` or the `zeroclaw` CLI against the same config.
+
+**"This daemon does not enforce plan mode."** The daemon ignored the
+plan-mode request instead of refusing it, which is how a daemon without plan
+mode answers. The session stays in build mode, so nothing it does is claimed
+to be read-only. Plan mode needs a daemon that enforces it.
+
+**There is no effort pill.** Either the daemon has no per-session thinking
+controls, or the session's model has no reasoning depth the daemon can
+adjust. `/status` says which.
+
+**A reopened session is on the wrong model.** The daemon forgot the session's
+settings when it restarted, and the saved copy could not be sent again, for
+example because that provider is no longer configured. The transcript shows
+the daemon's reason. Pick the model again, or `/forget` the saved settings.
 
 **A second launch focuses the existing window.** One instance per user session
 by design. Quit the app first to relaunch with different flags.

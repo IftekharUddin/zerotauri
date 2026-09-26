@@ -552,6 +552,35 @@ Related open RFCs to reconcile with before D3, D10, and the attachment work:
 and the accepted compatibility precedent
 [#9975 web bundle and daemon compatibility](https://github.com/zeroclaw-labs/zeroclaw/issues/9975).
 
+### 8.1 Addendum: per-session controls (2026-09-26)
+
+ZeroTauri now ships the Code pane's per-session controls against whichever
+daemon it is talking to, detected rather than assumed.
+
+| Control | What the daemon needs | Upstream status |
+|---|---|---|
+| Model, provider, temperature | `session/configure` with `model`, `model_provider`, `temperature` | Released (0.8.x) |
+| Plan mode | `overrides.mode` (`build` or `plan`) on `session/configure`, enforced as a per-turn tool allowlist, refused with `SESSION_BUSY` mid-turn | Not yet in a release or an open PR |
+| Goal mode | Nothing: a client-side loop with zerocode's marker protocol | Not applicable |
+| Reasoning effort and thinking display (D12) | `overrides.thinking_level` and `thinking_display`, a `reset` list, `session/thinking-options`, and a `/effort:<level>` prompt prefix | [zeroclaw-labs/zeroclaw#10636](https://github.com/zeroclaw-labs/zeroclaw/pull/10636), stacked on #10611, open |
+
+Methods are detected from the `initialize` capability list. Override fields
+cannot be: a daemon drops a field it does not know instead of refusing it, so
+the app learns from the configure echo of a real request (a requested field
+missing from the echo is unsupported) and never sends a probe.
+
+Daemon facts this work surfaced, each a candidate for an ordinary RPC PR:
+
+- There is no read-only way to get a session's overrides except
+  `session/thinking-options`, and no `session/update` when they change, so two
+  clients on one session can disagree until a resume.
+- Overrides and mode live only in memory. The app stores what the daemon
+  confirmed and sends it again on reopen; persisting them with the ACP session
+  row (next to D2) would make the daemon the source of truth.
+- `config/catalog-models` may fetch from the provider, and a connection's
+  frames run serially, so a slow catalogue delays the connection's other
+  calls. The app opens pickers only on an idle session.
+
 ## 9. Phases
 
 Phase 1, working vertical slice (developer builds): scaffold and gates, Rust RPC core,

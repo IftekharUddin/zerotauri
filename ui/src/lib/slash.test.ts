@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 import { NO_OVERRIDES } from './overrides.ts'
@@ -117,4 +118,13 @@ test('status names where each setting comes from', () => {
   assert.match(text, /Provider: anthropic\.default \(configured default\)/)
   assert.match(text, /Model: claude-fable-5-1 \(set for this session\)/)
   assert.match(text, /Mode: build \(this daemon does not enforce plan mode\)/)
+})
+
+test('the README documents every command and alias', () => {
+  const readme = readFileSync(new URL('../../../README.md', import.meta.url), 'utf8')
+  for (const command of COMMANDS) {
+    for (const name of [command.name, ...command.aliases]) {
+      assert.ok(readme.includes(`\`/${name}`), `README is missing /${name}`)
+    }
+  }
 })
