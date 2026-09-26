@@ -1,3 +1,4 @@
+import { goalLabel } from '../lib/goal'
 import { phaseLabel, type SessionState } from '../lib/session'
 import type { ConnectionInfo } from '../lib/types'
 
@@ -31,6 +32,11 @@ export function StatusBar({
       {info?.startedByApp && <span>started by this app</span>}
       {info && <span>v{info.serverVersion}</span>}
       <span className="spacer" />
+      {session && (
+        <span className={`modebadge ${session.mode}`} title="Session mode">
+          {session.goal ? goalLabel(session.goal) : session.mode}
+        </span>
+      )}
       {session && <span>{phaseLabel(session)}</span>}
       {session?.contextInput != null && (
         <span>

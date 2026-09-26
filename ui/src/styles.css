@@ -222,6 +222,8 @@ code.inline {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .chip.control.muted { opacity: 0.6; }
+.chip.control.mode-plan { border-color: var(--zc-accent); background: var(--zc-accent-soft); }
+.chip.control.mode-plan .value, .chip.control.mode-goal .value { color: var(--zc-accent); }
 .composer .spacer { flex: 1; }
 
 /* ── Changes ─────────────────────────────────────────────────────── */
@@ -250,6 +252,8 @@ code.inline {
 }
 .statusbar .mono { font-family: var(--zc-mono); }
 .statusbar .spacer { flex: 1; }
+.statusbar .modebadge { font-family: var(--zc-mono); }
+.statusbar .modebadge.plan, .statusbar .modebadge.goal { color: var(--zc-accent); }
 .statusbar .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
 .statusbar .dot.ok { background: var(--zc-ok); }
 .statusbar .dot.busy { background: var(--zc-accent); }

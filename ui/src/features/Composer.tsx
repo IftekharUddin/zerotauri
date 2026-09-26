@@ -14,6 +14,9 @@ interface ComposerProps {
   controls?: ReactNode
   /** Why sending is paused right now, if it is. Typing stays allowed. */
   hold?: string | null
+  /** Shift+Tab in the message box. */
+  onCycleMode?: () => void
+  placeholder?: string
 }
 
 export function Composer({
@@ -28,6 +31,8 @@ export function Composer({
   agentAlias,
   controls,
   hold = null,
+  onCycleMode,
+  placeholder,
 }: ComposerProps) {
   const ref = useRef<HTMLTextAreaElement>(null)
 
@@ -43,6 +48,11 @@ export function Composer({
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       onSubmit()
+    } else if (event.key === 'Tab' && event.shiftKey && onCycleMode) {
+      // Bound only here, not window-wide, so Shift+Tab still moves focus
+      // backwards everywhere else in the window.
+      event.preventDefault()
+      onCycleMode()
     }
   }
 
@@ -52,7 +62,7 @@ export function Composer({
         ref={ref}
         value={value}
         disabled={disabled}
-        placeholder={disabled ? 'Reconnecting…' : `Ask ${agentAlias} for a change…`}
+        placeholder={disabled ? 'Reconnecting…' : (placeholder ?? `Ask ${agentAlias} for a change…`)}
         aria-label="Message"
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={onKeyDown}
@@ -63,7 +73,7 @@ export function Composer({
           Thinking: {showThoughts ? 'shown' : 'hidden'}
         </button>
         <span className={hold ? 'hint held' : 'hint'} role={hold ? 'status' : undefined}>
-          {hold ?? 'Enter to send · Shift+Enter for a new line · ⌘K for actions'}
+          {hold ?? 'Enter to send · Shift+Enter for a new line · Shift+Tab for modes · ⌘K for actions'}
         </span>
         <span className="spacer" />
         {busy ? (

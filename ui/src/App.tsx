@@ -10,7 +10,18 @@ import { SessionRail } from './features/SessionRail'
 import { Setup } from './features/Setup'
 import { StatusBar } from './features/StatusBar'
 import { Transcript } from './features/Transcript'
+import { GOAL_MAX_TURNS } from './lib/goal'
 import * as ipc from './lib/ipc'
+import {
+  MODE_BUSY,
+  PLAN_UNSUPPORTED,
+  modeChangeNeedsDaemon,
+  modeNotice,
+  nextMode,
+  wireMode,
+  type Mode,
+  type PlanSupport,
+} from './lib/modes'
 import {
   SETTINGS_BUSY,
   applyConfigureEcho,
@@ -23,13 +34,17 @@ import {
 } from './lib/overrides'
 import {
   applyUpdate,
+  beginGoal,
   clearApproval,
+  continueGoal,
   createSession,
   isBusy,
   loadHistory,
   markCancelling,
   pushNotice,
   startTurn,
+  stopGoal,
+  withMode,
   type SessionState,
 } from './lib/session'
 import type {
@@ -85,6 +100,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [picker, setPicker] = useState<Picker | null>(null)
   const [configuring, setConfiguring] = useState(false)
+  const [planSupport, setPlanSupport] = useState<PlanSupport>('unknown')
 
   const sessionRef = useRef<SessionState | null>(null)
   const draftRef = useRef('')
@@ -94,6 +110,9 @@ export default function App() {
   const caps = useMemo(() => deriveCaps(info), [info])
   const capsRef = useRef<Caps>(caps)
   capsRef.current = caps
+  const planSupportRef = useRef<PlanSupport>('unknown')
+  // Set after `setMode` exists; the reconnect listener below calls it.
+  const restoreModeRef = useRef<(sessionId: string, mode: Mode) => void>(() => {})
 
   // Changes apply to the ref first, then publish to React. Every write goes
   // through here or `install`, so the ref is always the latest state and a
@@ -141,6 +160,16 @@ export default function App() {
     },
     [mutate],
   )
+
+  const updatePlanSupport = useCallback((value: PlanSupport) => {
+    planSupportRef.current = value
+    setPlanSupport(value)
+  }, [])
+
+  // What was learned about plan mode belongs to one daemon process.
+  useEffect(() => {
+    updatePlanSupport('unknown')
+  }, [info?.endpoint, info?.serverPid, updatePlanSupport])
 
   // ── Connection lifecycle ────────────────────────────────────────
   useEffect(() => {
@@ -241,11 +270,18 @@ export default function App() {
               branch: reopened.branch,
               hash: reopened.hash,
               plan: reopened.plan as never,
+              // Goal is this app's own mode; plan is re-sent below, because
+              // the daemon may have restarted and forgotten it.
+              mode: open.mode === 'goal' ? 'goal' : 'build',
             }),
             reopened.messages,
           )
           install(rebuilt)
           void loadIdentity(rebuilt)
+          if (open.goal) {
+            notify(rebuilt.sessionId, 'Goal stopped: the connection to the daemon dropped during the run.', 'warn')
+          }
+          if (open.mode === 'plan') restoreModeRef.current(rebuilt.sessionId, 'plan')
           if (reopened.state === 'running') setRecovery(reopened.sessionId)
         } catch (e) {
           setError(String(e))
@@ -260,7 +296,7 @@ export default function App() {
       active = false
       stop?.()
     }
-  }, [install, loadIdentity])
+  }, [install, loadIdentity, notify])
 
   // ── Session actions ─────────────────────────────────────────────
   const openSession = useCallback(
@@ -309,18 +345,38 @@ export default function App() {
     [install, loadIdentity, refreshSessions],
   )
 
+  /**
+   * Start a turn locally and send it. What is sent can differ from what the
+   * transcript shows: a goal sends its preamble but shows the objective.
+   */
+  const submit = useCallback(
+    (next: SessionState, sent: string, fromDraft: boolean) => {
+      install(next)
+      if (fromDraft) setDraft('')
+      ipc.sessionPrompt(next.sessionId, sent, next.generation).catch((e) => {
+        mutate((s) => {
+          if (s.sessionId !== next.sessionId) return s
+          const failed: SessionState = { ...pushNotice(s, String(e), 'error'), phase: 'idle' }
+          return stopGoal(failed, 'Goal stopped: the prompt could not be sent.')
+        })
+      })
+    },
+    [install, mutate],
+  )
+
   const send = useCallback(() => {
     const current = sessionRef.current
     const text = draftRef.current.trim()
     if (!current || !text || isBusy(current) || configuringRef.current) return
-    const next = startTurn(current, text)
-    install(next)
-    setDraft('')
-    ipc.sessionPrompt(next.sessionId, text, next.generation).catch((e) => {
-      mutate((s) => pushNotice(s, String(e), 'error'))
-      mutate((s) => ({ ...s, phase: 'idle' }))
-    })
-  }, [install, mutate])
+    // A goal between turns is about to send its own continuation.
+    if (current.goal) return
+    if (current.mode === 'goal') {
+      const step = beginGoal(current, text)
+      submit(step.state, step.sent, true)
+      return
+    }
+    submit(startTurn(current, text), text, true)
+  }, [submit])
 
   const cancel = useCallback(() => {
     const current = sessionRef.current
@@ -491,6 +547,83 @@ export default function App() {
     [configure, loadIdentity, openModelPicker],
   )
 
+  /**
+   * Switch mode. Only a change between plan and anything else reaches the
+   * daemon, and the mode changes here only once the daemon confirms it, so
+   * the UI never claims a restriction the daemon is not enforcing.
+   */
+  const setMode = useCallback(
+    async (next: Mode): Promise<boolean> => {
+      const current = sessionRef.current
+      if (!current) return false
+      if (current.mode === next) return true
+      if (isBusy(current)) {
+        notify(current.sessionId, MODE_BUSY, 'warn')
+        return false
+      }
+      if (configuringRef.current) return false
+      const sessionId = current.sessionId
+      const enter = (s: SessionState) =>
+        s.sessionId === sessionId ? pushNotice(withMode(s, next), modeNotice(next, GOAL_MAX_TURNS)) : s
+
+      if (!modeChangeNeedsDaemon(current.mode, next)) {
+        mutate(enter)
+        return true
+      }
+      if (next === 'plan' && (!capsRef.current.configure || planSupportRef.current === 'unsupported')) {
+        notify(sessionId, PLAN_UNSUPPORTED, 'warn')
+        return false
+      }
+
+      const requested = { mode: wireMode(next) }
+      setConfiguringFlag(true)
+      try {
+        const result = await ipc.sessionConfigure({ sessionId, overrides: requested })
+        mutate((s) => applyConfigureEcho(s, requested, result))
+        // A daemon without plan mode drops the field instead of refusing it.
+        if (result.droppedFields.includes('mode')) {
+          updatePlanSupport('unsupported')
+          if (next === 'plan') {
+            notify(sessionId, PLAN_UNSUPPORTED, 'warn')
+            return false
+          }
+        } else {
+          updatePlanSupport('supported')
+        }
+        mutate(enter)
+        return true
+      } catch (e) {
+        notify(sessionId, configureFailureText(e), 'error')
+        return false
+      } finally {
+        setConfiguringFlag(false)
+      }
+    },
+    [mutate, notify, setConfiguringFlag, updatePlanSupport],
+  )
+
+  const cycleMode = useCallback(() => {
+    const current = sessionRef.current
+    if (current) void setMode(nextMode(current.mode, planSupportRef.current))
+  }, [setMode])
+
+  restoreModeRef.current = (sessionId, mode) => {
+    if (sessionRef.current?.sessionId === sessionId) void setMode(mode)
+  }
+
+  // Drive the goal loop: a completed turn that asked to continue is followed
+  // by the next one as soon as the session is idle and connected.
+  const goalNext = session?.goal?.next ?? null
+  const phase = session?.phase ?? null
+  useEffect(() => {
+    if (goalNext !== 'continue' || phase !== 'idle' || conn.kind !== 'connected' || configuring) {
+      return
+    }
+    const current = sessionRef.current
+    const step = current ? continueGoal(current) : null
+    if (step) submit(step.state, step.sent, false)
+  }, [configuring, conn.kind, goalNext, phase, submit])
+
   const openProviderPicker = useCallback(() => {
     const current = settingsTarget()
     if (!current || !capsRef.current.providers) return
@@ -605,6 +738,38 @@ export default function App() {
         run: () => void closeSession(),
       },
       {
+        id: 'mode-cycle',
+        label: 'Cycle mode (build, plan, goal)',
+        hint: 'Shift+Tab',
+        enabled: !!session,
+        run: cycleMode,
+      },
+      {
+        id: 'mode-build',
+        label: 'Switch to build mode',
+        enabled: !!session && session.mode !== 'build',
+        run: () => void setMode('build'),
+      },
+      {
+        id: 'mode-plan',
+        label: 'Switch to plan mode (read-only)',
+        enabled:
+          !!session && session.mode !== 'plan' && caps.configure && planSupport !== 'unsupported',
+        run: () => void setMode('plan'),
+      },
+      {
+        id: 'mode-goal',
+        label: 'Switch to goal mode',
+        enabled: !!session && session.mode !== 'goal',
+        run: () => void setMode('goal'),
+      },
+      {
+        id: 'goal-stop',
+        label: 'Stop the goal after this turn',
+        enabled: !!session?.goal,
+        run: () => mutate((s) => stopGoal(s, 'Goal stopped. The current turn still finishes.')),
+      },
+      {
         id: 'model',
         label: 'Change model…',
         hint: isMac ? '⇧⌘M' : 'Ctrl+Shift+M',
@@ -662,11 +827,15 @@ export default function App() {
       cancel,
       caps,
       closeSession,
+      cycleMode,
       info,
       install,
+      mutate,
       openModelPicker,
       openProviderPicker,
+      planSupport,
       session,
+      setMode,
       showChanges,
       showRail,
       showThoughts,
@@ -675,6 +844,15 @@ export default function App() {
 
   const connected = conn.kind === 'connected'
   const busy = session ? isBusy(session) : false
+  const placeholder = !session
+    ? undefined
+    : session.goal
+      ? `Goal turn ${session.goal.turn} of ${session.goal.max} is running. Esc stops the turn and the goal.`
+      : session.mode === 'goal'
+        ? `Describe the objective. ${session.agentAlias} keeps working until it reports done or blocked.`
+        : session.mode === 'plan'
+          ? `Ask ${session.agentAlias} to investigate or propose a plan. Nothing will be changed.`
+          : undefined
 
   return (
     <div className="app">
@@ -838,11 +1016,15 @@ export default function App() {
                 onToggleThoughts={() => setShowThoughts((v) => !v)}
                 agentAlias={session.agentAlias}
                 hold={configuring ? 'Applying session settings…' : null}
+                onCycleMode={cycleMode}
+                placeholder={placeholder}
                 controls={
                   <SessionControls
                     session={session}
                     caps={caps}
+                    planSupport={planSupport}
                     locked={busy || configuring}
+                    onCycleMode={cycleMode}
                     onProvider={openProviderPicker}
                     onModel={() => openModelPicker()}
                   />

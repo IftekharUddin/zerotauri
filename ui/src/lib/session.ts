@@ -5,6 +5,16 @@
 // generation does not match the turn we started is ignored, so a terminal
 // event from an older turn can never settle a newer one.
 
+import {
+  GOAL_MAX_TURNS,
+  continuationLabel,
+  goalContinuation,
+  goalPreamble,
+  parseGoalMarker,
+  stripGoalWrapper,
+  type GoalRun,
+} from './goal.ts'
+import type { Mode } from './modes.ts'
 import { NO_OVERRIDES, UNKNOWN_IDENTITY } from './overrides.ts'
 import type { Identity, MessageEntry, PlanEntry, SessionOverrides, SessionUpdate } from './types.ts'
 
@@ -63,6 +73,9 @@ export interface SessionState {
   overrides: SessionOverrides
   /** The configured provider and model, used where no override is set. */
   identity: Identity
+  mode: Mode
+  /** The goal loop, while one is running. */
+  goal: GoalRun | null
 }
 
 let counter = 0
@@ -82,6 +95,7 @@ export function createSession(opts: {
   plan?: PlanEntry[] | null
   overrides?: SessionOverrides
   identity?: Identity
+  mode?: Mode
 }): SessionState {
   return {
     sessionId: opts.sessionId,
@@ -100,6 +114,8 @@ export function createSession(opts: {
     turn: 0,
     overrides: opts.overrides ?? NO_OVERRIDES,
     identity: opts.identity ?? UNKNOWN_IDENTITY,
+    mode: opts.mode ?? 'build',
+    goal: null,
   }
 }
 
@@ -141,7 +157,8 @@ export function loadHistory(state: SessionState, messages: MessageEntry[]): Sess
     }
     if (message.role === 'user') {
       turn += 1
-      entries.push({ kind: 'user', id: nextId('user'), text: stripEnrichment(message.content), turn })
+      const text = stripGoalWrapper(message.content) ?? stripEnrichment(message.content)
+      entries.push({ kind: 'user', id: nextId('user'), text, turn })
     } else if (message.role === 'assistant') {
       entries.push({
         kind: 'assistant',
@@ -323,13 +340,11 @@ export function applyUpdate(state: SessionState, update: SessionUpdate): Session
           turn: state.turn,
         })
       }
-      return {
-        ...state,
-        entries,
-        phase: 'idle',
-        activeTool: null,
-        pendingApproval: null,
-      }
+      return settleGoal(
+        { ...state, entries, phase: 'idle', activeTool: null, pendingApproval: null },
+        done.outcome,
+        done.content,
+      )
     }
 
     default:
@@ -345,6 +360,89 @@ function sealStreaming(entries: Entry[]): Entry[] {
     next[next.length - 1] = { ...last, streaming: false }
   }
   return next
+}
+
+// ── Modes and the goal loop ─────────────────────────────────────────
+//
+// These run only inside a turn_complete that passed the generation fence, or
+// from a user action, so a late terminal event from a replaced turn can never
+// step or stop a goal.
+
+/** Put the session in a mode locally. Leaving goal mode ends a run. */
+export function withMode(state: SessionState, mode: Mode): SessionState {
+  if (state.mode === mode) return state
+  const next = { ...state, mode }
+  return next.goal ? stopGoal(next, `Goal stopped: switched to ${mode} mode.`) : next
+}
+
+/** Start a goal: the transcript shows the objective, the daemon gets the preamble. */
+export function beginGoal(
+  state: SessionState,
+  objective: string,
+): { state: SessionState; sent: string } {
+  const started = startTurn(state, objective)
+  const run: GoalRun = { objective, turn: 1, max: GOAL_MAX_TURNS, next: null }
+  return {
+    state: pushNotice(
+      { ...started, goal: run },
+      `Goal started. This app keeps the agent going for up to ${GOAL_MAX_TURNS} turns, until it reports done or blocked.`,
+    ),
+    sent: goalPreamble(objective),
+  }
+}
+
+/** The next goal turn, when the last one asked for it. */
+export function continueGoal(state: SessionState): { state: SessionState; sent: string } | null {
+  const run = state.goal
+  if (!run || run.next !== 'continue') return null
+  const turn = run.turn + 1
+  return {
+    state: { ...startTurn(state, continuationLabel(turn, run.max)), goal: { ...run, turn, next: null } },
+    sent: goalContinuation(),
+  }
+}
+
+export function stopGoal(state: SessionState, notice: string): SessionState {
+  if (!state.goal) return state
+  return { ...pushNotice(state, notice), goal: null }
+}
+
+/** The agent's final text in the current turn, if it wrote any. */
+function lastReply(state: SessionState): string | null {
+  for (let i = state.entries.length - 1; i >= 0; i -= 1) {
+    const entry = state.entries[i]
+    if (!entry || entry.turn !== state.turn) break
+    if (entry.kind === 'assistant') return entry.text
+  }
+  return null
+}
+
+function settleGoal(
+  state: SessionState,
+  outcome: 'completed' | 'cancelled' | 'failed',
+  content: string,
+): SessionState {
+  const run = state.goal
+  if (!run) return state
+  if (outcome !== 'completed') {
+    return { ...pushNotice(state, `Goal stopped: the turn was ${outcome}.`, 'warn'), goal: null }
+  }
+  const marker = parseGoalMarker(lastReply(state) ?? content)
+  if (marker.kind === 'done') {
+    const turns = run.turn === 1 ? '1 turn' : `${run.turn} turns`
+    return { ...pushNotice(state, `Goal reported done after ${turns}.`), goal: null }
+  }
+  if (marker.kind === 'blocked') {
+    const text = marker.reason ? `Goal blocked: ${marker.reason}` : 'Goal blocked.'
+    return { ...pushNotice(state, text, 'warn'), goal: null }
+  }
+  if (run.turn >= run.max) {
+    return {
+      ...pushNotice(state, `Goal stopped after ${run.max} turns without a done marker.`, 'warn'),
+      goal: null,
+    }
+  }
+  return { ...state, goal: { ...run, next: 'continue' } }
 }
 
 export function clearApproval(state: SessionState): SessionState {
