@@ -24,7 +24,10 @@ export function Setup({
   onResume: (session: SessionSummary) => void
 }) {
   const [cwd, setCwd] = useState<string | null>(null)
-  const [agent, setAgent] = useState<string>(agents[0]?.alias ?? '')
+  const [picked, setAgent] = useState<string>('')
+  // The list usually arrives after this mounts, so a pick that is not (or no
+  // longer) in it falls back to the first agent instead of staying empty.
+  const agent = agents.some((a) => a.alias === picked) ? picked : (agents[0]?.alias ?? '')
 
   if (agents.length === 0) {
     return (
