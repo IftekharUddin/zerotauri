@@ -144,6 +144,8 @@ export interface ModelCatalog {
   models: string[]
   local: boolean
   live: boolean
+  /** True when the daemon's list was longer than the app shows. */
+  truncated: boolean
 }
 
 /** The provider and model a session runs on, as far as the app can tell. */

@@ -24,6 +24,8 @@ import {
   type PlanSupport,
 } from './lib/modes'
 import {
+  MODEL_ID_HINT,
+  PROVIDER_REF_HINT,
   SETTINGS_BUSY,
   applyConfigureEcho,
   applyThinking,
@@ -35,6 +37,8 @@ import {
   effortAdjustable,
   effortUnavailable,
   failureText,
+  isProviderRef,
+  isSaneModelId,
   sourceWords,
   type Caps,
 } from './lib/overrides'
@@ -552,11 +556,14 @@ export default function App() {
         note: provider ? null : 'The provider for this session is not known, so there is no list. Type a model id.',
         // The daemon does not check a model id against the catalogue, and the
         // catalogue can lag a provider, so a typed id is always offered.
-        fallback: (query) => ({
-          id: 'model:typed',
-          label: `Use model "${query}"`,
-          run: () => void configure({ model: query }),
-        }),
+        fallback: (query) =>
+          isSaneModelId(query)
+            ? {
+                id: 'model:typed',
+                label: `Use model "${query}"`,
+                run: () => void configure({ model: query }),
+              }
+            : null,
       })
       if (!listable || provider === null) return
       ipc.catalogModels(provider).then(
@@ -567,7 +574,9 @@ export default function App() {
             note:
               catalog.models.length === 0
                 ? `No models listed for ${provider}. Type a model id.`
-                : null,
+                : catalog.truncated
+                  ? `Showing the first ${catalog.models.length} of a longer list. Type an id for any other.`
+                  : null,
             actions: catalog.models.map((model) => ({
               id: `model:${model}`,
               label: model,
@@ -978,8 +987,15 @@ export default function App() {
           else void setMode('goal')
           return true
         case 'model':
-          if (arg) void configure({ model: arg })
-          else openModelPicker()
+          if (!arg) {
+            openModelPicker()
+            return true
+          }
+          if (!isSaneModelId(arg)) {
+            notify(id, MODEL_ID_HINT, 'warn')
+            return false
+          }
+          void configure({ model: arg })
           return true
         case 'effort':
           if (!arg) {
@@ -994,8 +1010,15 @@ export default function App() {
           }
           return setThinkingByName('display', arg)
         case 'provider':
-          if (arg) void chooseProvider(arg)
-          else openProviderPicker()
+          if (!arg) {
+            openProviderPicker()
+            return true
+          }
+          if (!isProviderRef(arg)) {
+            notify(id, PROVIDER_REF_HINT, 'warn')
+            return false
+          }
+          void chooseProvider(arg)
           return true
         case 'agent':
           if (arg) openAgent(arg)

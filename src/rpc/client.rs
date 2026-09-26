@@ -138,7 +138,11 @@ impl DaemonClient {
             .await
     }
 
-    async fn request_with_timeout(
+    /// Issue a request with a ceiling of the caller's choosing. For a call
+    /// that may reach a provider over the network: the daemon answers one
+    /// connection's requests in order, so a slow answer holds up whatever is
+    /// queued behind it, including a cancel.
+    pub async fn request_with_timeout(
         &self,
         method_name: &str,
         params: Value,

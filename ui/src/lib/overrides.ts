@@ -159,6 +159,24 @@ export function describeChange(
   return null
 }
 
+/** Longest model id or provider reference the app will send. */
+export const TOKEN_MAX = 256
+
+/** A model id as providers spell them: one token, no whitespace or control characters. */
+export function isSaneModelId(text: string): boolean {
+  return text.length > 0 && text.length <= TOKEN_MAX && !/[\s\p{Cc}]/u.test(text)
+}
+
+/** A `<provider_type>.<alias>` reference, loosely: one token with a dot inside it. */
+export function isProviderRef(text: string): boolean {
+  return isSaneModelId(text) && text.includes('.') && !text.startsWith('.') && !text.endsWith('.')
+}
+
+export const MODEL_ID_HINT =
+  'A model id is one word with no spaces, for example claude-fable-5-1 or gpt-5.'
+export const PROVIDER_REF_HINT =
+  'A provider reference is the provider type, a dot, and the alias from your config, for example anthropic.default.'
+
 export function isRpcFailure(error: unknown): error is RpcFailure {
   if (typeof error !== 'object' || error === null) return false
   const candidate = error as Partial<RpcFailure>

@@ -4,6 +4,8 @@
 //! agent execution, tool approval, and the authoritative transcript; this app
 //! only asks and renders.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::State;
@@ -403,6 +405,8 @@ pub async fn session_configure(
         ));
     }
     let requested: SessionOverrides = request.overrides.into();
+    validate_overrides(&requested).map_err(|m| RpcFailure::local(error_code::INVALID_PARAMS, m))?;
+    validate_reset(&request.reset).map_err(|m| RpcFailure::local(error_code::INVALID_PARAMS, m))?;
     let params = SessionConfigureParams {
         session_id: request.session_id.clone(),
         overrides: requested.clone(),
@@ -481,36 +485,48 @@ pub struct ModelCatalog {
     /// True when the list came from the provider rather than a built-in
     /// catalogue.
     pub live: bool,
+    /// True when the daemon's list was longer than the app shows.
+    pub truncated: bool,
 }
 
 /// Models the daemon knows for a provider reference. The daemon does not
 /// check a model id against this list, so the UI also accepts a typed id.
+///
+/// The list can come live from the provider, so the call has a short
+/// ceiling of its own and the answer is bounded: an oversized or slow
+/// answer must not hold up a cancel or an approval queued behind it.
 #[tauri::command]
 pub async fn catalog_models(
     state: State<'_, AppState>,
     model_provider: String,
 ) -> Result<ModelCatalog, String> {
+    if !is_plain_token(&model_provider, TOKEN_MAX) {
+        return Err("That provider reference is not valid.".into());
+    }
     let client = state.client().await.map_err(|e| e.user_message())?;
     if !client.supports(method::CONFIG_CATALOG_MODELS) {
         return Err("This daemon cannot list models.".into());
     }
     let value = client
-        .request(
+        .request_with_timeout(
             method::CONFIG_CATALOG_MODELS,
             json!({ "model_provider": model_provider }),
+            LIST_TIMEOUT,
         )
         .await
         .map_err(|e| e.user_message())?;
     let parsed: CatalogModelsResult = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    let (models, truncated) = bound_catalog(parsed.models);
     Ok(ModelCatalog {
         model_provider: if parsed.model_provider.is_empty() {
             model_provider
         } else {
             parsed.model_provider
         },
-        models: parsed.models,
+        models,
         local: parsed.local,
         live: parsed.live,
+        truncated,
     })
 }
 
@@ -522,7 +538,7 @@ pub async fn model_providers(state: State<'_, AppState>) -> Result<Vec<String>, 
         return Err("This daemon cannot list its providers.".into());
     }
     let value = client
-        .request(method::QUICKSTART_STATE, json!({}))
+        .request_with_timeout(method::QUICKSTART_STATE, json!({}), LIST_TIMEOUT)
         .await
         .map_err(|e| e.user_message())?;
     let parsed: QuickstartStateResult = serde_json::from_value(value).map_err(|e| e.to_string())?;
@@ -555,13 +571,19 @@ pub async fn session_identity(
     state: State<'_, AppState>,
     request: IdentityRequest,
 ) -> Result<Identity, String> {
+    // The alias and reference become config-path prefixes the daemon
+    // matches as plain strings, so anything but a plain token reads as
+    // unknown rather than being sent.
+    if !is_plain_token(&request.agent_alias, TOKEN_MAX) {
+        return Ok(Identity::default());
+    }
     let client = state.client().await.map_err(|e| e.user_message())?;
     if !client.supports(method::CONFIG_LIST) {
         return Ok(Identity::default());
     }
     let provider = match request
         .model_provider
-        .filter(|reference| !reference.trim().is_empty())
+        .filter(|reference| is_plain_token(reference, TOKEN_MAX))
     {
         Some(reference) => Some(reference),
         None => {
@@ -596,6 +618,71 @@ async fn config_string_inner(client: &DaemonClient, prop: &str) -> Option<String
         .and_then(|entry| entry.value)
         .and_then(|value| value.as_str().map(str::to_owned))
         .filter(|text| !text.trim().is_empty())
+}
+
+/// Longest value the session-settings commands pass to the daemon.
+const TOKEN_MAX: usize = 256;
+/// Most model ids the app shows from one catalogue answer.
+const CATALOG_MAX: usize = 2000;
+/// Ceiling for list calls that may reach a provider over the network.
+const LIST_TIMEOUT: Duration = Duration::from_secs(12);
+/// The only settings `reset` may name.
+const RESET_FIELDS: [&str; 2] = ["thinking_level", "thinking_display"];
+
+/// A value fit to travel as a model id, provider reference, agent alias, or
+/// enum name: non-empty, bounded, and free of whitespace and control
+/// characters. The daemon has its own rules on top; this keeps a stray
+/// newline or a pasted paragraph from ever reaching it.
+fn is_plain_token(text: &str, max: usize) -> bool {
+    !text.is_empty()
+        && text.len() <= max
+        && !text.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
+fn validate_overrides(o: &SessionOverrides) -> Result<(), String> {
+    let fields = [
+        ("model", &o.model),
+        ("model_provider", &o.model_provider),
+        ("mode", &o.mode),
+        ("thinking_level", &o.thinking_level),
+        ("thinking_display", &o.thinking_display),
+    ];
+    for (name, value) in fields {
+        if let Some(text) = value
+            && !is_plain_token(text, TOKEN_MAX)
+        {
+            return Err(format!(
+                "{name} must be one value with no spaces, up to {TOKEN_MAX} characters"
+            ));
+        }
+    }
+    if o.temperature.is_some_and(|t| !t.is_finite()) {
+        return Err("temperature must be a finite number".into());
+    }
+    Ok(())
+}
+
+fn validate_reset(reset: &[String]) -> Result<(), String> {
+    match reset
+        .iter()
+        .find(|field| !RESET_FIELDS.contains(&field.as_str()))
+    {
+        Some(other) => Err(format!(
+            "`{other}` cannot be reset; only thinking_level and thinking_display can"
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Keep a catalogue to ids the UI can show, and to a size it can render.
+fn bound_catalog(models: Vec<String>) -> (Vec<String>, bool) {
+    let mut kept: Vec<String> = models
+        .into_iter()
+        .filter(|id| is_plain_token(id, TOKEN_MAX))
+        .collect();
+    let truncated = kept.len() > CATALOG_MAX;
+    kept.truncate(CATALOG_MAX);
+    (kept, truncated)
 }
 
 /// Branch lookup never fails the caller: a workspace outside a repository is
@@ -679,6 +766,50 @@ mod tests {
             assert!(value[key].is_null(), "{key} should be null");
             assert!(value.get(key).is_some(), "{key} should be present");
         }
+    }
+
+    #[test]
+    fn plain_tokens_exclude_whitespace_control_characters_and_empties() {
+        assert!(is_plain_token("claude-fable-5-1", TOKEN_MAX));
+        assert!(is_plain_token("anthropic.default", TOKEN_MAX));
+        assert!(!is_plain_token("", TOKEN_MAX));
+        assert!(!is_plain_token("two words", TOKEN_MAX));
+        assert!(!is_plain_token("line\nbreak", TOKEN_MAX));
+        assert!(!is_plain_token("tab\there", TOKEN_MAX));
+        assert!(!is_plain_token(&"x".repeat(TOKEN_MAX + 1), TOKEN_MAX));
+    }
+
+    #[test]
+    fn overrides_with_a_pasted_paragraph_or_a_nan_are_refused_before_the_daemon() {
+        let mut o = SessionOverrides {
+            model: Some("gpt-5".into()),
+            ..SessionOverrides::default()
+        };
+        assert!(validate_overrides(&o).is_ok());
+        o.model = Some("gpt-5\nplease".into());
+        assert!(validate_overrides(&o).unwrap_err().contains("model"));
+        o.model = None;
+        o.temperature = Some(f64::NAN);
+        assert!(validate_overrides(&o).is_err());
+    }
+
+    #[test]
+    fn only_the_two_thinking_fields_can_be_reset() {
+        assert!(validate_reset(&["thinking_level".into()]).is_ok());
+        assert!(validate_reset(&[]).is_ok());
+        assert!(validate_reset(&["model".into()]).is_err());
+    }
+
+    #[test]
+    fn a_catalogue_is_bounded_and_scrubbed() {
+        let mut models: Vec<String> = (0..CATALOG_MAX + 5).map(|i| format!("m{i}")).collect();
+        models.push("has space".into());
+        let (kept, truncated) = bound_catalog(models);
+        assert_eq!(kept.len(), CATALOG_MAX);
+        assert!(truncated);
+        let (small, cut) = bound_catalog(vec!["a".into(), "bad id".into()]);
+        assert_eq!(small, vec!["a"]);
+        assert!(!cut);
     }
 
     #[test]

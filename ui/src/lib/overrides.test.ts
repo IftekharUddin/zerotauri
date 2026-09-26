@@ -10,7 +10,9 @@ import {
   effectiveIdentity,
   effortAdjustable,
   effortUnavailable,
+  isProviderRef,
   isRpcFailure,
+  isSaneModelId,
 } from './overrides.ts'
 import { __resetIds, createSession, type SessionState } from './session.ts'
 import type { Configured, ConnectionInfo, SessionOverrides, ThinkingOptions } from './types.ts'
@@ -171,6 +173,19 @@ test('thinking changes and resets read in words', () => {
     describeChange({ thinkingDisplay: 'summarized' }, withOptions({ thinkingDisplay: 'summarized' })),
     'Thinking display set to summarized.',
   )
+})
+
+test('typed model ids and provider references are one clean token', () => {
+  assert.equal(isSaneModelId('claude-fable-5-1'), true)
+  assert.equal(isSaneModelId('qwen3-coder:30b'), true)
+  assert.equal(isSaneModelId(''), false)
+  assert.equal(isSaneModelId('two words'), false)
+  assert.equal(isSaneModelId('line\nbreak'), false)
+  assert.equal(isSaneModelId('x'.repeat(257)), false)
+  assert.equal(isProviderRef('anthropic.default'), true)
+  assert.equal(isProviderRef('anthropic'), false)
+  assert.equal(isProviderRef('.default'), false)
+  assert.equal(isProviderRef('anthropic. default'), false)
 })
 
 test('a refused value keeps the daemon text, which names what it accepts', () => {
