@@ -36,6 +36,7 @@ pub fn run() {
             commands::connection::pick_folder,
             commands::connection::daemon_stop_owned,
             commands::connection::client_protocol_version,
+            commands::connection::open_url,
             commands::session::session_list,
             commands::session::session_open,
             commands::session::session_prompt,

@@ -77,8 +77,47 @@ pub async fn daemon_stop_owned(state: State<'_, AppState>) -> Result<bool, Strin
     Ok(true)
 }
 
+/// Longest address the app will hand to the system browser.
+const LINK_MAX: usize = 2048;
+
+/// True for an absolute http or https address with nothing odd in it.
+fn is_web_link(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    url.len() <= LINK_MAX
+        && (lower.starts_with("http://") || lower.starts_with("https://"))
+        && !url.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
+/// Open a transcript link in the system browser. The webview never
+/// navigates, so a link in agent output cannot replace this window, and
+/// only http and https addresses are handed on.
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), String> {
+    if !is_web_link(&url) {
+        return Err("Only http and https links can be opened.".into());
+    }
+    open::that_detached(&url).map_err(|e| format!("could not open the link: {e}"))
+}
+
 /// The protocol version this build speaks, for the About surface.
 #[tauri::command]
 pub fn client_protocol_version() -> u64 {
     wire::PROTOCOL_VERSION
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_plain_web_addresses_may_be_opened() {
+        assert!(is_web_link("https://example.com/a?b=1#c"));
+        assert!(is_web_link("HTTP://example.com"));
+        assert!(!is_web_link("javascript:alert(1)"));
+        assert!(!is_web_link("file:///etc/passwd"));
+        assert!(!is_web_link("https://example.com/with space"));
+        assert!(!is_web_link("https://example.com/\n"));
+        assert!(!is_web_link(&format!("https://{}", "a".repeat(LINK_MAX))));
+        assert!(!is_web_link(""));
+    }
 }

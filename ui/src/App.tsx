@@ -12,6 +12,7 @@ import { StatusBar } from './features/StatusBar'
 import { Transcript } from './features/Transcript'
 import { GOAL_MAX_TURNS, formatGoalLimit, parseGoalLimit, type GoalLimit } from './lib/goal'
 import * as ipc from './lib/ipc'
+import { setLinkOpener } from './lib/markdown'
 import {
   MODE_BUSY,
   PLAN_UNSUPPORTED,
@@ -294,6 +295,14 @@ export default function App() {
   useEffect(() => {
     updatePlanSupport('unknown')
   }, [info?.endpoint, info?.serverPid, updatePlanSupport])
+
+  // A clicked transcript link leaves through the Rust side, never by
+  // navigating this window.
+  useEffect(() => {
+    setLinkOpener((url) => {
+      ipc.openUrl(url).catch((e) => setError(failureText(e)))
+    })
+  }, [])
 
   // ── Connection lifecycle ────────────────────────────────────────
   useEffect(() => {

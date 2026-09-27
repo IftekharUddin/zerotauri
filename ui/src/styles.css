@@ -94,8 +94,8 @@ button.ghost:hover:not(:disabled) { background: var(--zc-surface-2); color: var(
   max-width: 340px; cursor: pointer;
 }
 .chip:hover { border-color: var(--zc-border-strong); color: var(--zc-text); }
-.chip .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chip .branch { color: var(--zc-accent); font-family: var(--zc-mono); font-size: 11px; }
+.chip .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.chip .branch { color: var(--zc-accent); font-family: var(--zc-mono); font-size: 11px; white-space: nowrap; flex: 0 0 auto; }
 
 .body { display: flex; flex: 1 1 auto; min-height: 0; }
 
@@ -170,7 +170,42 @@ button.ghost:hover:not(:disabled) { background: var(--zc-surface-2); color: var(
 pre.code {
   background: var(--zc-surface-2); border: 1px solid var(--zc-border); border-radius: 6px;
   padding: 9px 11px; overflow-x: auto; font-family: var(--zc-mono); font-size: 12.5px;
+  position: relative; margin: 0 0 8px; line-height: 1.45;
 }
+pre.code[data-lang]::before {
+  content: attr(data-lang); position: absolute; top: 3px; right: 8px;
+  font-size: 10px; color: var(--zc-text-faint); font-family: var(--zc-sans); letter-spacing: 0.04em;
+}
+
+/* ── Rendered Markdown in a reply ────────────────────────────────── */
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 8px; white-space: pre-wrap; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 14px 0 6px; line-height: 1.3; font-weight: 600; }
+.md h1 { font-size: 17px; }
+.md h2 { font-size: 15.5px; }
+.md h3 { font-size: 14.5px; }
+.md h4, .md h5, .md h6 { font-size: 14px; }
+.md ul, .md ol { margin: 0 0 8px; padding-left: 24px; }
+.md li { margin: 2px 0; }
+.md li > p { margin: 0 0 4px; }
+.md li.task-list-item { list-style: none; margin-left: -20px; }
+.md input.task { margin: 0 7px 0 0; vertical-align: -1px; accent-color: var(--zc-accent); }
+.md blockquote {
+  margin: 0 0 8px; padding: 2px 12px; border-left: 3px solid var(--zc-border-strong);
+  color: var(--zc-text-dim);
+}
+.md hr { border: 0; border-top: 1px solid var(--zc-border); margin: 12px 0; }
+.md .table-wrap { overflow-x: auto; margin: 0 0 8px; }
+.md table { border-collapse: collapse; font-size: 13px; }
+.md th, .md td { border: 1px solid var(--zc-border); padding: 4px 9px; text-align: left; vertical-align: top; }
+.md th { background: var(--zc-surface-2); font-weight: 600; }
+.md a.link { color: var(--zc-accent); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
+.md a.link:hover { text-decoration-style: solid; }
+.md .link.dead { color: var(--zc-text-dim); text-decoration: line-through; }
+.md del { color: var(--zc-text-dim); }
+.md .image { color: var(--zc-text-dim); font-style: italic; }
+.md .image .mono { font-family: var(--zc-mono); font-size: 12px; font-style: normal; overflow-wrap: anywhere; }
 code.inline {
   background: var(--zc-surface-2); border: 1px solid var(--zc-border);
   border-radius: 4px; padding: 0 4px; font-family: var(--zc-mono); font-size: 12.5px;

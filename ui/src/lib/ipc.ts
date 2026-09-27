@@ -34,6 +34,9 @@ export const pickFolder = () => invoke<string | null>('pick_folder')
 
 export const daemonStopOwned = () => invoke<boolean>('daemon_stop_owned')
 
+/** Hand an http or https link to the system browser. The window never navigates. */
+export const openUrl = (url: string) => invoke<void>('open_url', { url })
+
 export const sessionList = () => invoke<SessionSummary[]>('session_list')
 
 export const sessionOpen = (request: {

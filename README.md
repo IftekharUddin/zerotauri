@@ -296,6 +296,16 @@ leading slash.
 | `/changes` | Show or hide the Changes panel |
 | `/forget` | Forget the settings saved for this session |
 
+## Reading the transcript
+
+Replies render as Markdown: headings, emphasis, lists and task lists, tables,
+quotes, rules, and code, with the language shown on a fenced block. Raw HTML
+in a reply is shown as the text it is, never interpreted. A link opens in
+your system browser when you click it, for http and https addresses only;
+the window itself never navigates, so a link in agent output cannot replace
+the app. An image is shown as its description and address, since nothing
+remote loads inside the app.
+
 ## Keys
 
 | Action | Key |
