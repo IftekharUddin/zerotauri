@@ -154,6 +154,36 @@ export interface Identity {
   model: string | null
 }
 
+/** What the app can learn about a folder without touching it. */
+export interface FolderInfo {
+  path: string
+  exists: boolean
+  isDir: boolean
+  /** Root of the git checkout the folder is in, or null. */
+  repoRoot: string | null
+  /** The checked-out branch; null on a detached HEAD or an empty repo. */
+  branch: string | null
+  isLinkedWorktree: boolean
+  /** The checkout holding the history: for a linked worktree, its main worktree. */
+  project: string | null
+  gitAvailable: boolean
+}
+
+export interface WorktreeInfo {
+  path: string
+  branch: string
+  /** The branch or commit it was created from. */
+  base: string
+}
+
+export interface PreparedWorkspace {
+  /** The directory the session works in. */
+  cwd: string
+  /** The folder the user chose, resolved. */
+  project: string
+  worktree: WorktreeInfo | null
+}
+
 /** The structured error the session-settings commands reject with. */
 export interface RpcFailure {
   code: number

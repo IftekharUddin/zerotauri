@@ -50,6 +50,8 @@ pub fn run() {
             commands::session::catalog_models,
             commands::session::model_providers,
             commands::session::session_identity,
+            commands::workspace::inspect_folder,
+            commands::workspace::prepare_workspace,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ZeroTauri");

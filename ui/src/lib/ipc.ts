@@ -10,12 +10,14 @@ import type {
   Configured,
   ConnectionEvent,
   ConnectionInfo,
+  FolderInfo,
   Identity,
   MessageEntry,
   ModelCatalog,
   OpenedSession,
   OverridePatch,
   PlanEntry,
+  PreparedWorkspace,
   SessionSettings,
   SessionSummary,
   SessionUpdate,
@@ -82,6 +84,12 @@ export const modelProviders = () => invoke<string[]>('model_providers')
 
 export const sessionIdentity = (request: { agentAlias: string; modelProvider?: string | null }) =>
   invoke<Identity>('session_identity', { request })
+
+export const inspectFolder = (path: string) => invoke<FolderInfo>('inspect_folder', { path })
+
+/** Creates the session's worktree when asked; rejects with the daemon-free reason otherwise. */
+export const prepareWorkspace = (request: { folder: string; worktree: boolean }) =>
+  invoke<PreparedWorkspace>('prepare_workspace', { request })
 
 export const onSessionUpdate = (handler: (update: SessionUpdate) => void) =>
   listen<SessionUpdate>('code://session-update', (event) => handler(event.payload))

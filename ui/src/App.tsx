@@ -69,6 +69,7 @@ import {
   type Parked,
 } from './lib/roster'
 import { helpText, parseInput, statusText } from './lib/slash'
+import { loadRecentFolders, projectOf, rememberFolder } from './lib/workspace'
 import {
   applyUpdate,
   beginGoal,
@@ -159,6 +160,11 @@ export default function App() {
   const agentsRef = useRef(agents)
   agentsRef.current = agents
   const store = useMemo(() => browserStore(), [])
+  const [recent, setRecent] = useState<string[]>(() => loadRecentFolders(store))
+  // What the chooser starts with: the front session's project and agent
+  // when a session is parked, else the most recent folder.
+  const [setupFolder, setSetupFolder] = useState<string | null>(null)
+  const [setupAgent, setSetupAgent] = useState<string | null>(null)
   // App-wide, not per session: how many turns a goal may run on its own.
   const [goalLimit, setGoalLimitState] = useState<GoalLimit>(() => loadGoalLimit(store))
   const goalLimitRef = useRef(goalLimit)
@@ -206,7 +212,11 @@ export default function App() {
   /** Set the front session aside, still live, and show the chooser. */
   const parkFront = useCallback(() => {
     const current = sessionRef.current
-    if (current) setParked(park(parkedRef.current, current))
+    if (current) {
+      setParked(park(parkedRef.current, current))
+      setSetupFolder(projectOf(current.workspaceDir))
+      setSetupAgent(current.agentAlias)
+    }
     install(null)
   }, [install, setParked])
 
@@ -443,7 +453,11 @@ export default function App() {
 
   // ── Session actions ─────────────────────────────────────────────
   const openSession = useCallback(
-    async (request: { agentAlias: string; cwd?: string; sessionId?: string }) => {
+    async (request: {
+      agentAlias: string
+      cwd?: string
+      sessionId?: string
+    }): Promise<string | null> => {
       setOpening(true)
       setError(null)
       try {
@@ -459,7 +473,7 @@ export default function App() {
                 : kept.parked,
             )
             install(kept.session)
-            return
+            return kept.session.sessionId
           }
         }
 
@@ -471,7 +485,7 @@ export default function App() {
             const proceed = window.confirm(
               'That session is running right now, possibly in another client.\n\nOpen it here anyway? This window will take over its controls.',
             )
-            if (!proceed) return
+            if (!proceed) return null
           }
         }
 
@@ -512,13 +526,49 @@ export default function App() {
         if (running) setRecovery(opened.sessionId)
         void restoreRef.current(next, saved, running)
         await refreshSessions()
+        return next.sessionId
       } catch (e) {
         setError(String(e))
+        return null
       } finally {
         setOpening(false)
       }
     },
     [install, notify, refreshSessions, setParked, store],
+  )
+
+  /**
+   * Start a session from a project folder. In a git checkout the session can
+   * get a worktree of its own at <folder>/<timestamp> on a new branch, so
+   * several sessions can work on one repository without touching each
+   * other's files. `auto` takes a worktree when the folder is a checkout.
+   */
+  const startSession = useCallback(
+    async (agentAlias: string, folder: string, worktree: boolean | 'auto') => {
+      setOpening(true)
+      setError(null)
+      try {
+        let wanted = worktree === true
+        if (worktree === 'auto') {
+          const info = await ipc.inspectFolder(folder)
+          wanted = info.repoRoot !== null && info.gitAvailable
+        }
+        const prepared = await ipc.prepareWorkspace({ folder, worktree: wanted })
+        setRecent(rememberFolder(store, prepared.project))
+        const sessionId = await openSession({ agentAlias, cwd: prepared.cwd })
+        if (sessionId && prepared.worktree) {
+          notify(
+            sessionId,
+            `Working in a worktree of ${shortPath(prepared.project)}: ${shortPath(prepared.worktree.path)}, on branch ${prepared.worktree.branch} from ${prepared.worktree.base}. The checkout itself is untouched.`,
+          )
+        }
+      } catch (e) {
+        setError(failureText(e))
+      } finally {
+        setOpening(false)
+      }
+    },
+    [notify, openSession, store],
   )
 
   /**
@@ -1019,10 +1069,11 @@ export default function App() {
         return
       }
       // A session keeps its agent for life, so another agent means another
-      // session. This one stays on the daemon and in the rail.
-      void openSession({ agentAlias: agent.alias, cwd: current.workspaceDir })
+      // session, in the same project and, in a checkout, its own worktree.
+      // This one stays open in the background.
+      void startSession(agent.alias, projectOf(current.workspaceDir), 'auto')
     },
-    [notify, openSession],
+    [notify, startSession],
   )
 
   const openAgentPicker = useCallback(() => {
@@ -1701,8 +1752,12 @@ export default function App() {
               agents={agents}
               sessions={sessions}
               busy={opening}
+              recent={recent}
+              initialFolder={setupFolder ?? recent[0] ?? null}
+              initialAgent={setupAgent}
               onPickFolder={ipc.pickFolder}
-              onStart={(agentAlias, cwd) => void openSession({ agentAlias, cwd })}
+              onInspect={ipc.inspectFolder}
+              onStart={(agentAlias, folder, worktree) => void startSession(agentAlias, folder, worktree)}
               onResume={(summary) =>
                 void openSession({
                   agentAlias: summary.agentAlias ?? agents[0]?.alias ?? '',

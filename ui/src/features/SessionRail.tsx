@@ -1,11 +1,6 @@
 import type { LiveMark } from '../lib/roster'
 import type { SessionSummary } from '../lib/types'
-
-const shortPath = (path: string | null): string => {
-  if (!path) return ''
-  const parts = path.split('/').filter(Boolean)
-  return parts[parts.length - 1] ?? path
-}
+import { sessionLabel } from '../lib/workspace'
 
 const relativeTime = (iso: string): string => {
   const then = Date.parse(iso)
@@ -50,7 +45,7 @@ export function SessionRail({
             aria-current={session.sessionId === activeId ? 'true' : undefined}
           >
             <span className="label">
-              {session.name ?? shortPath(session.workspaceDir) ?? session.sessionId.slice(0, 8)}
+              {session.name ?? sessionLabel(session.workspaceDir) ?? session.sessionId.slice(0, 8)}
             </span>
             <span className="meta">
               {session.agentAlias ?? 'agent'} · {session.messageCount} msg ·{' '}

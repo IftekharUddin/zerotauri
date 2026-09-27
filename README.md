@@ -70,8 +70,10 @@ installed, and at least one agent is enabled with a working provider key. If
 
 4. **Start a session.** Choose a folder with the picker and an agent from the
    list. Only enabled agents are offered, and a single enabled agent is
-   selected for you. Type what you want changed and press Enter. The row
-   above the message box holds the session's mode, provider, and model; see
+   selected for you. In a git checkout the session gets a worktree of its
+   own by default; see [Folders and worktrees](#folders-and-worktrees). Type
+   what you want changed and press Enter. The row above the message box
+   holds the session's mode, provider, and model; see
    [Session settings](#session-settings) and [Modes](#modes).
 
 5. **Answer approvals as they come.** When a tool needs your say-so, a card
@@ -126,6 +128,59 @@ never touched.
 The spawned daemon's output goes to a log under the app's log directory,
 `~/Library/Logs/io.github.iftekharuddin.zerotauri/` on macOS and the
 equivalent per-app logs directory on Linux and Windows.
+
+## Folders and worktrees
+
+The folder chooser remembers the folders you have started sessions from and
+offers them in a list, with the current one first. "New session" from an open
+session starts in that session's project with the same agent, so a second
+session in the same repository is one click.
+
+In a git checkout, a new session gets a worktree of its own by default:
+ZeroTauri runs `git worktree add` to create `<folder>/<timestamp>` on a new
+branch named `zerotauri/<timestamp>`, branched from the current `HEAD`, and
+the session works there. The checkout you chose is left as it is, so several
+sessions can work on one repository without stepping on each other's files,
+and the branch keeps each session's commits apart. Started from a subfolder
+of a checkout, the session keeps its place in the new worktree.
+
+The session folders are added to the repository's own `.git/info/exclude`,
+which is outside version control, so they never appear in `git status` and
+nothing tracked is touched. They are ordinary worktrees: `git worktree list`
+shows them, and when a session is done, `git worktree remove <folder>` takes
+the folder away and `git branch -d zerotauri/<timestamp>` the branch. The rail
+names such a session by its repository and timestamp.
+
+Untick "Give this session its own worktree" to work in the checkout itself.
+A folder that is not a git checkout, or a machine without `git` on the app's
+`PATH`, always works in the folder itself.
+
+This is the one thing the app does to your folder on its own. It runs `git`
+with fixed arguments, only when you start a session with the option on, and
+never reads or edits a file in the checkout.
+
+## Open sessions
+
+One session is in front. "New session", `/new`, and `/agent` set the front
+session aside rather than closing it: it stays live on the daemon, keeps
+receiving what the agent streams, and comes back exactly as it was when you
+pick it in the rail. The rail marks each open session as running, needing an
+approval, or open. Closing a session with `/close` removes it from the daemon
+as well as the window; its transcript stays and can be resumed later.
+
+An approval raised in a session that is not in front is not shown until you
+switch to it, and the daemon denies an unanswered approval after its timeout,
+so the rail's "needs approval" mark is worth watching. A goal running in a
+session that is not in front pauses between turns until you come back.
+
+If the daemon connection drops, the sessions that were set aside are dropped
+from the window with a notice, because the daemon cancels their turns and
+their events were bound to the old connection. Reopen them from the rail.
+
+Resuming a session whose turn is still running, for example one started in
+zerocode, shows a banner: whatever that turn asked before now was never shown
+here. The session opens busy, Stop works, and the transcript fills in from
+the daemon when the turn ends.
 
 ## Sessions and zerocode
 
@@ -318,6 +373,14 @@ settings when it restarted, and the saved copy could not be sent again, for
 example because that provider is no longer configured. The transcript shows
 the daemon's reason. Pick the model again, or `/forget` the saved settings.
 
+**"That folder is not a git checkout, so no worktree can be made."** The
+worktree option needs a git repository. Untick it, or choose the checkout.
+
+**"git is not installed or not on this app's PATH."** An app launched from
+the Dock gets a minimal `PATH`. The app looks in the usual install locations;
+if `git` lives elsewhere, start the session without a worktree, or launch the
+app from a terminal where `git` is on `PATH`.
+
 **A second launch focuses the existing window.** One instance per user session
 by design. Quit the app first to relaunch with different flags.
 
@@ -348,7 +411,8 @@ For frontend hot reload, run `cargo tauri dev`, which starts the Vite dev
 server and points the window at it.
 
 `tests/capability_security.rs` asserts the webview never gains a native
-capability beyond the folder picker. CI runs the frontend tests and build,
+capability beyond the folder picker. The Rust core runs `git` only to create
+a session worktree, and only when asked. CI runs the frontend tests and build,
 clippy with warnings denied, and the Rust tests on macOS, Linux, and Windows.
 
 The design and delivery plan, including the daemon-side changes this app would

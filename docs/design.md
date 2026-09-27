@@ -569,7 +569,19 @@ cannot be: a daemon drops a field it does not know instead of refusing it, so
 the app learns from the configure echo of a real request (a requested field
 missing from the echo is unsupported) and never sends a probe.
 
+Two follow-ups landed after that (2026-09-26): the window keeps every session
+it opened live in a roster and routes each event to its own session, so
+switching never loses text, an approval, or a goal; and a new session in a git
+checkout gets a worktree of its own at `<folder>/<timestamp>` on a branch
+`zerotauri/<timestamp>`, created by the Rust core with `git worktree add` and
+kept out of `git status` through the repository's `info/exclude`. That is the
+one place the app touches a folder itself, and it does so only on request.
+
 Daemon facts this work surfaced, each a candidate for an ordinary RPC PR:
+
+- A resumed session's `message_count` comes from a `try_lock` on its agent,
+  so a session with a turn in flight reports zero. The app now ignores the
+  count on resume; the daemon could report the persisted count instead.
 
 - There is no read-only way to get a session's overrides except
   `session/thinking-options`, and no `session/update` when they change, so two

@@ -282,6 +282,10 @@ code.inline {
 }
 .setup .pathbox { display: flex; align-items: center; gap: 9px; }
 .setup .pathbox .p { flex: 1; font-family: var(--zc-mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--zc-text-dim); }
+.setup .note { color: var(--zc-text-faint); font-size: 12px; margin: 6px 0 0; }
+.setup label.check { display: flex; align-items: center; gap: 8px; text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--zc-text); }
+.setup label.check input { margin: 0; }
+.setup .field > select + .pathbox { margin-top: 6px; }
 .setup .recent { margin-top: 26px; }
 .setup .recent h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--zc-text-faint); margin: 0 0 7px; }
 
