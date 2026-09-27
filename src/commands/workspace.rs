@@ -68,22 +68,24 @@ pub async fn inspect_folder(path: String) -> Result<FolderInfo, String> {
             return Ok(info);
         }
         Ok(None) => return Ok(info),
-        Ok(Some(root)) => PathBuf::from(root),
+        Ok(Some(root)) => from_git(&root),
     };
     let git_dir = git_query(
         &folder,
         &["rev-parse", "--path-format=absolute", "--git-dir"],
     )
-    .await?;
+    .await?
+    .map(|p| from_git(&p));
     let common = git_query(
         &folder,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )
-    .await?;
+    .await?
+    .map(|p| from_git(&p));
     info.is_linked_worktree = matches!((&git_dir, &common), (Some(g), Some(c)) if g != c);
     info.project = common
         .as_deref()
-        .and_then(|c| Path::new(c).parent())
+        .and_then(Path::parent)
         .map(|p| p.display().to_string())
         .or_else(|| Some(root.display().to_string()));
     info.branch = git_query(&folder, &["rev-parse", "--abbrev-ref", "HEAD"])
@@ -164,7 +166,7 @@ pub async fn prepare_workspace(request: PrepareRequest) -> Result<PreparedWorksp
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )
     .await?
-    .map(PathBuf::from)
+    .map(|p| from_git(&p))
     .unwrap_or_else(|| root.join(".git"));
 
     let name = next_free_name(&root, &timestamp_name());
@@ -206,12 +208,38 @@ fn resolve_folder(text: &str) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return Err("The folder must be an absolute path.".into());
     }
-    let resolved =
-        std::fs::canonicalize(&path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
+    let resolved = std::fs::canonicalize(&path)
+        .map(tidy)
+        .map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
     if !resolved.is_dir() {
         return Err(format!("{} is not a folder.", path.display()));
     }
     Ok(resolved)
+}
+
+/// A canonical path in the spelling the rest of the system uses. On
+/// Windows, `canonicalize` adds a `\\?\` prefix that git does not print and
+/// users do not expect to see; it comes off here.
+fn tidy(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path
+}
+
+/// A path git printed, in the same spelling as everything else here. Git
+/// uses forward slashes even on Windows, so the path is resolved through the
+/// file system when it exists.
+fn from_git(text: &str) -> PathBuf {
+    let path = PathBuf::from(text.trim());
+    std::fs::canonicalize(&path).map(tidy).unwrap_or(path)
 }
 
 /// Local time, to the second: sorts in the rail and reads in Finder.
@@ -311,7 +339,9 @@ mod tests {
                     .unwrap_or_default()
             ));
             std::fs::create_dir_all(&path).expect("temp dir");
-            Self(std::fs::canonicalize(&path).expect("canonical temp dir"))
+            Self(tidy(
+                std::fs::canonicalize(&path).expect("canonical temp dir"),
+            ))
         }
     }
 
@@ -385,6 +415,29 @@ mod tests {
         for pattern in EXCLUDE_PATTERNS {
             assert!(text.contains(pattern));
         }
+    }
+
+    #[test]
+    fn tidy_paths_carry_no_verbatim_prefix() {
+        assert_eq!(
+            tidy(PathBuf::from("/plain/path")),
+            PathBuf::from("/plain/path")
+        );
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                tidy(PathBuf::from(r"\\?\C:\repo")),
+                PathBuf::from(r"C:\repo")
+            );
+            assert_eq!(
+                tidy(PathBuf::from(r"\\?\UNC\host\share")),
+                PathBuf::from(r"\\host\share")
+            );
+        }
+        let tmp = TempDir::new("tidy");
+        let forward = tmp.0.display().to_string().replace('\\', "/");
+        assert_eq!(from_git(&forward), tmp.0);
+        assert_eq!(from_git("/no/such/place"), PathBuf::from("/no/such/place"));
     }
 
     #[test]
