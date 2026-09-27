@@ -58,6 +58,16 @@ import {
   type SavedSettings,
   type SettingsChange,
 } from './lib/prefs'
+import {
+  NO_PARKED,
+  liveMarks,
+  park,
+  routeParked,
+  unpark,
+  updateParked,
+  without,
+  type Parked,
+} from './lib/roster'
 import { helpText, parseInput, statusText } from './lib/slash'
 import {
   applyUpdate,
@@ -175,6 +185,34 @@ export default function App() {
     setSession(next)
   }, [])
 
+  // Sessions opened here but not in front. They stay live on the daemon and
+  // keep receiving their events; see lib/roster.ts.
+  const [parked, setParkedState] = useState<Parked>(NO_PARKED)
+  const parkedRef = useRef<Parked>(NO_PARKED)
+  const setParked = useCallback((next: Parked) => {
+    parkedRef.current = next
+    setParkedState(next)
+  }, [])
+
+  /** Change one open session, in front or parked. Unknown ids are ignored. */
+  const mutateAny = useCallback(
+    (sessionId: string, fn: (session: SessionState) => SessionState) => {
+      if (sessionRef.current?.sessionId === sessionId) mutate(fn)
+      else setParked(updateParked(parkedRef.current, sessionId, fn))
+    },
+    [mutate, setParked],
+  )
+
+  /** Set the front session aside, still live, and show the chooser. */
+  const parkFront = useCallback(() => {
+    const current = sessionRef.current
+    if (current) setParked(park(parkedRef.current, current))
+    install(null)
+  }, [install, setParked])
+
+  // Assigned once `reloadTranscript` exists; the update listener calls it.
+  const reloadRef = useRef<(sessionId: string) => Promise<void>>(async () => {})
+
   const refreshSessions = useCallback(async () => {
     try {
       setSessions(await ipc.sessionList())
@@ -183,13 +221,32 @@ export default function App() {
     }
   }, [])
 
-  /** Post a notice to one session, and only if it is still the open one. */
+  /** Post a notice to one open session, in front or parked. */
   const notify = useCallback(
     (sessionId: string, text: string, tone: Tone = 'info') => {
-      mutate((s) => (s.sessionId === sessionId ? pushNotice(s, text, tone) : s))
+      mutateAny(sessionId, (s) => pushNotice(s, text, tone))
     },
-    [mutate],
+    [mutateAny],
   )
+
+  /**
+   * Replace a session's transcript with what the daemon has persisted. Used
+   * when a turn that was already running when the session was opened here
+   * ends: what streamed here was only the tail of it.
+   */
+  const reloadTranscript = useCallback(
+    async (sessionId: string) => {
+      try {
+        const messages = await ipc.sessionMessages(sessionId)
+        mutateAny(sessionId, (s) => loadHistory(s, messages))
+      } catch {
+        // What streamed here stays on screen.
+      }
+      setRecovery((r) => (r === sessionId ? null : r))
+    },
+    [mutateAny],
+  )
+  reloadRef.current = reloadTranscript
 
   /** Remember what the daemon confirmed, so a reopened session can get it back. */
   const persist = useCallback(
@@ -210,12 +267,12 @@ export default function App() {
       if (!capsRef.current.identity) return
       try {
         const identity = await ipc.sessionIdentity({ agentAlias: target.agentAlias, modelProvider })
-        mutate((s) => (s.sessionId === target.sessionId ? { ...s, identity } : s))
+        mutateAny(target.sessionId, (s) => ({ ...s, identity }))
       } catch {
         // Display only: an unknown default reads as "default".
       }
     },
-    [mutate],
+    [mutateAny],
   )
 
   const updatePlanSupport = useCallback((value: PlanSupport) => {
@@ -271,7 +328,16 @@ export default function App() {
     void ipc
       .onSessionUpdate((update) => {
         if (!active) return
-        mutate((current) => applyUpdate(current, update))
+        const front = sessionRef.current
+        if (front && front.sessionId === update.session_id) {
+          const adopted = front.adoptedTurn
+          mutate((current) => applyUpdate(current, update))
+          // The turn ran partly before this window watched it, so what
+          // streamed here is a fragment; the daemon has the whole turn now.
+          if (adopted && update.type === 'turn_complete') void reloadRef.current(update.session_id)
+        } else {
+          setParked(routeParked(parkedRef.current, update))
+        }
         if (update.type === 'turn_complete') void refreshSessions()
       })
       .then((un) => {
@@ -282,7 +348,7 @@ export default function App() {
       active = false
       stop?.()
     }
-  }, [mutate, refreshSessions])
+  }, [mutate, refreshSessions, setParked])
 
   // ── Connection events, including reconnect recovery ─────────────
   useEffect(() => {
@@ -308,17 +374,31 @@ export default function App() {
       setConn({ kind: 'connected', info: event.info })
       if (!event.resumed) return
 
+      // Parked sessions had their events bound to the old connection, and
+      // the daemon cancelled their turns when it dropped. They are set aside
+      // rather than shown stale; the rail reopens them.
+      const setAside = parkedRef.current.size
+      if (setAside > 0) setParked(NO_PARKED)
+
       // Re-attach the open session: resuming rebinds ownership to this
       // connection, which cancel needs, then reload the transcript the
       // daemon persisted while we were away.
       const open = sessionRef.current
-      if (!open) return
+      if (!open) {
+        if (setAside > 0) {
+          setError(
+            `${setAside} open session${setAside === 1 ? ' was' : 's were'} set aside when the connection dropped. Reopen them from the rail.`,
+          )
+        }
+        return
+      }
       void (async () => {
         try {
           const reopened = await ipc.sessionOpen({
             agentAlias: open.agentAlias,
             sessionId: open.sessionId,
           })
+          const running = reopened.state === 'running'
           const rebuilt = loadHistory(
             createSession({
               sessionId: reopened.sessionId,
@@ -327,6 +407,7 @@ export default function App() {
               branch: reopened.branch,
               hash: reopened.hash,
               plan: reopened.plan as never,
+              running,
             }),
             reopened.messages,
           )
@@ -334,7 +415,13 @@ export default function App() {
           if (open.goal) {
             notify(rebuilt.sessionId, 'Goal stopped: the connection to the daemon dropped during the run.', 'warn')
           }
-          const running = reopened.state === 'running'
+          if (setAside > 0) {
+            notify(
+              rebuilt.sessionId,
+              `${setAside} other open session${setAside === 1 ? ' was' : 's were'} set aside when the connection dropped; the daemon cancelled any turn running there. Reopen them from the rail.`,
+              'warn',
+            )
+          }
           if (running) setRecovery(reopened.sessionId)
           // The daemon may have restarted and forgotten everything, so send
           // what this window last had confirmed.
@@ -352,7 +439,7 @@ export default function App() {
       active = false
       stop?.()
     }
-  }, [install, notify])
+  }, [install, notify, setParked])
 
   // ── Session actions ─────────────────────────────────────────────
   const openSession = useCallback(
@@ -360,6 +447,22 @@ export default function App() {
       setOpening(true)
       setError(null)
       try {
+        // A session this window already has open comes back exactly as it
+        // was, and the one in front takes its place in the background.
+        if (request.sessionId) {
+          const kept = unpark(parkedRef.current, request.sessionId)
+          if (kept) {
+            const front = sessionRef.current
+            setParked(
+              front && front.sessionId !== kept.session.sessionId
+                ? park(kept.parked, front)
+                : kept.parked,
+            )
+            install(kept.session)
+            return
+          }
+        }
+
         // A session another client is actively running would have its cancel
         // ownership taken over by this resume, so confirm before stealing it.
         if (request.sessionId) {
@@ -377,6 +480,7 @@ export default function App() {
           cwd: request.cwd ?? null,
           sessionId: request.sessionId ?? null,
         })
+        const running = opened.state === 'running'
         const next = loadHistory(
           createSession({
             sessionId: opened.sessionId,
@@ -385,6 +489,7 @@ export default function App() {
             branch: opened.branch,
             hash: opened.hash,
             plan: opened.plan as never,
+            running,
           }),
           opened.messages,
         )
@@ -395,6 +500,8 @@ export default function App() {
         // arms an autonomous loop on the next message, so a session last used
         // that way opens in build mode and says so; Shift+Tab goes back.
         const saved = stored?.mode === 'goal' ? { ...stored, mode: 'build' as const } : stored
+        const front = sessionRef.current
+        if (front && front.sessionId !== next.sessionId) setParked(park(parkedRef.current, front))
         install(next)
         if (stored?.mode === 'goal') {
           notify(
@@ -402,7 +509,6 @@ export default function App() {
             'This session was last in goal mode. It opens in build mode; press Shift+Tab to go back to goal.',
           )
         }
-        const running = opened.state === 'running'
         if (running) setRecovery(opened.sessionId)
         void restoreRef.current(next, saved, running)
         await refreshSessions()
@@ -412,7 +518,7 @@ export default function App() {
         setOpening(false)
       }
     },
-    [install, notify, refreshSessions, store],
+    [install, notify, refreshSessions, setParked, store],
   )
 
   /**
@@ -477,9 +583,10 @@ export default function App() {
     } catch {
       // Closing a session the daemon already dropped is not an error here.
     }
+    setParked(without(parkedRef.current, current.sessionId))
     install(null)
     await refreshSessions()
-  }, [install, refreshSessions])
+  }, [install, refreshSessions, setParked])
 
   // ── Session settings ────────────────────────────────────────────
   const openPicker = useCallback((spec: PickerSpec): number => {
@@ -1057,7 +1164,7 @@ export default function App() {
           else openAgentPicker()
           return true
         case 'new':
-          install(null)
+          parkFront()
           return true
         case 'close':
           void closeSession()
@@ -1107,7 +1214,6 @@ export default function App() {
       closeSession,
       configure,
       forgetSaved,
-      install,
       mutate,
       notify,
       openAgent,
@@ -1116,6 +1222,7 @@ export default function App() {
       openEffortPicker,
       openModelPicker,
       openProviderPicker,
+      parkFront,
       setGoalLimit,
       setMode,
       setThinkingByName,
@@ -1221,7 +1328,7 @@ export default function App() {
       }
       if (modKey(event) && !event.shiftKey && event.key.toLowerCase() === 'n') {
         event.preventDefault()
-        install(null)
+        parkFront()
         return
       }
       // Shift is part of these because Option+letter types a character in a
@@ -1275,11 +1382,11 @@ export default function App() {
   }, [
     cancel,
     decide,
-    install,
     openEffortPicker,
     openModelPicker,
     openProviderPicker,
     paletteOpen,
+    parkFront,
     picker,
   ])
 
@@ -1289,7 +1396,7 @@ export default function App() {
         id: 'new',
         label: 'New session',
         hint: isMac ? '⌘N' : 'Ctrl+N',
-        run: () => install(null),
+        run: parkFront,
       },
       {
         id: 'cancel',
@@ -1433,13 +1540,13 @@ export default function App() {
       forgetSaved,
       goalLimit,
       info,
-      install,
       mutate,
       openAgentPicker,
       openDisplayPicker,
       openEffortPicker,
       openModelPicker,
       openProviderPicker,
+      parkFront,
       planSupport,
       session,
       setMode,
@@ -1452,6 +1559,7 @@ export default function App() {
 
   const connected = conn.kind === 'connected'
   const busy = session ? isBusy(session) : false
+  const marks = useMemo(() => liveMarks(session, parked), [session, parked])
   const placeholder = !session
     ? undefined
     : session.goal
@@ -1531,8 +1639,9 @@ export default function App() {
       {recovery && (
         <div className="banner warn">
           <span>
-            A turn was running while this window was disconnected. Approvals raised meanwhile
-            are denied by the daemon after its timeout.
+            A turn was already running when this window opened this session. Anything it
+            asked before now was never shown here, and the daemon denies an unanswered
+            approval after its timeout. The transcript fills in when the turn ends.
           </span>
           <span className="spacer" />
           <button
@@ -1545,7 +1654,7 @@ export default function App() {
             Stop it
           </button>
           <button type="button" className="ghost" onClick={() => setRecovery(null)}>
-            Wait
+            Keep going
           </button>
         </div>
       )}
@@ -1564,13 +1673,14 @@ export default function App() {
           <SessionRail
             sessions={sessions}
             activeId={session?.sessionId ?? null}
+            marks={marks}
             onOpen={(summary) =>
               void openSession({
                 agentAlias: summary.agentAlias ?? agents[0]?.alias ?? '',
                 sessionId: summary.sessionId,
               })
             }
-            onNew={() => install(null)}
+            onNew={parkFront}
           />
         )}
 

@@ -1,3 +1,4 @@
+import type { LiveMark } from '../lib/roster'
 import type { SessionSummary } from '../lib/types'
 
 const shortPath = (path: string | null): string => {
@@ -20,11 +21,14 @@ const relativeTime = (iso: string): string => {
 export function SessionRail({
   sessions,
   activeId,
+  marks,
   onOpen,
   onNew,
 }: {
   sessions: SessionSummary[]
   activeId: string | null
+  /** Sessions this window has open, with what they are doing right now. */
+  marks: Map<string, LiveMark>
   onOpen: (session: SessionSummary) => void
   onNew: () => void
 }) {
@@ -51,6 +55,13 @@ export function SessionRail({
             <span className="meta">
               {session.agentAlias ?? 'agent'} · {session.messageCount} msg ·{' '}
               {relativeTime(session.lastActivity)}
+              {marks.get(session.sessionId)?.approval ? (
+                <span className="live approval"> · needs approval</span>
+              ) : marks.get(session.sessionId)?.busy ? (
+                <span className="live"> · running</span>
+              ) : marks.has(session.sessionId) && session.sessionId !== activeId ? (
+                <span className="live open"> · open</span>
+              ) : null}
             </span>
           </button>
         ))}

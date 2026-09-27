@@ -128,9 +128,11 @@ pub async fn session_open(
 
     // Replay the transcript. A resume that cannot load its history is an
     // error, not an empty transcript: showing nothing would look like data
-    // loss to the user.
+    // loss to the user. A resume always asks: the daemon counts a session's
+    // messages with a try-lock on its agent, so a session with a turn in
+    // flight reports zero even when it has a long history.
     let mut messages = Vec::new();
-    if client.supports(method::SESSION_MESSAGES) && created.message_count > 0 {
+    if client.supports(method::SESSION_MESSAGES) && (resuming || created.message_count > 0) {
         let loaded = client
             .request(
                 method::SESSION_MESSAGES,

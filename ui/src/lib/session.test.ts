@@ -301,3 +301,44 @@ test('a notice between turns still starts a fresh reply', () => {
   const replies = state.entries.filter((e) => e.kind === 'assistant')
   assert.equal(replies.length, 2)
 })
+
+test('a session opened mid-turn is busy, and settles on a completion it never issued', () => {
+  __resetIds()
+  let state = createSession({ sessionId: 's1', agentAlias: 'coder', workspaceDir: '/repo', running: true })
+  assert.equal(state.phase, 'working')
+  assert.equal(state.adoptedTurn, true)
+  state = applyUpdate(state, chunk('rest of the reply'))
+  state = applyUpdate(state, {
+    type: 'turn_complete',
+    session_id: 's1',
+    outcome: 'completed',
+    content: 'done',
+    client_turn_generation: 7,
+  })
+  assert.equal(state.phase, 'idle', 'the foreign generation is accepted once')
+  assert.equal(state.adoptedTurn, false)
+
+  state = startTurn(state, 'next')
+  const after = applyUpdate(state, {
+    type: 'turn_complete',
+    session_id: 's1',
+    outcome: 'completed',
+    content: '',
+    client_turn_generation: 7,
+  })
+  assert.equal(after, state, 'the fence is back for turns this window starts')
+})
+
+test('cancelling an adopted turn settles it too', () => {
+  __resetIds()
+  let state = createSession({ sessionId: 's1', agentAlias: 'coder', workspaceDir: '/repo', running: true })
+  state = applyUpdate(state, {
+    type: 'turn_complete',
+    session_id: 's1',
+    outcome: 'cancelled',
+    content: 'turn cancelled via client_rpc',
+    client_turn_generation: 3,
+  })
+  assert.equal(state.phase, 'idle')
+  assert.ok(state.entries.some((e) => e.kind === 'notice' && e.text.includes('cancelled')))
+})

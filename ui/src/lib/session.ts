@@ -90,6 +90,12 @@ export interface SessionState {
    * what it has now. `null` on a daemon without per-session thinking controls.
    */
   thinking: ThinkingOptions | null
+  /**
+   * True while the session is on a turn that was already running when this
+   * window opened it. Its completion carries a generation this window never
+   * issued, so the fence stands down for that one event.
+   */
+  adoptedTurn: boolean
 }
 
 let counter = 0
@@ -110,6 +116,8 @@ export function createSession(opts: {
   overrides?: SessionOverrides
   identity?: Identity
   mode?: Mode
+  /** The daemon reported a turn in flight at open time. */
+  running?: boolean
 }): SessionState {
   return {
     sessionId: opts.sessionId,
@@ -118,7 +126,7 @@ export function createSession(opts: {
     branch: opts.branch ?? null,
     hash: opts.hash ?? null,
     entries: [],
-    phase: 'idle',
+    phase: opts.running ? 'working' : 'idle',
     activeTool: null,
     generation: 0,
     pendingApproval: null,
@@ -131,6 +139,7 @@ export function createSession(opts: {
     mode: opts.mode ?? 'build',
     goal: null,
     thinking: null,
+    adoptedTurn: opts.running ?? false,
   }
 }
 
@@ -209,6 +218,7 @@ export function startTurn(state: SessionState, prompt: string): SessionState {
     turn,
     phase: 'working',
     activeTool: null,
+    adoptedTurn: false,
     entries: [...state.entries, { kind: 'user', id: nextId('user'), text: prompt, turn }],
   }
 }
@@ -340,10 +350,13 @@ export function applyUpdate(state: SessionState, update: SessionUpdate): Session
         client_turn_generation?: number
       }
       // Generation fencing: a terminal event from a turn we already replaced
-      // must not settle the current one.
+      // must not settle the current one. A turn adopted at open time carries
+      // a generation this window never issued, so it settles on any
+      // completion, and only that one.
       if (
         typeof done.client_turn_generation === 'number' &&
-        done.client_turn_generation !== state.generation
+        done.client_turn_generation !== state.generation &&
+        !state.adoptedTurn
       ) {
         return state
       }
@@ -358,7 +371,14 @@ export function applyUpdate(state: SessionState, update: SessionUpdate): Session
         })
       }
       return settleGoal(
-        { ...state, entries, phase: 'idle', activeTool: null, pendingApproval: null },
+        {
+          ...state,
+          entries,
+          phase: 'idle',
+          activeTool: null,
+          pendingApproval: null,
+          adoptedTurn: false,
+        },
         done.outcome,
         done.content,
       )

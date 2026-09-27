@@ -116,6 +116,9 @@ button.ghost:hover:not(:disabled) { background: var(--zc-surface-2); color: var(
 .rail .item.active { background: var(--zc-accent-soft); border-color: var(--zc-accent); }
 .rail .item .label { display: block; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail .item .meta { display: block; font-size: 11px; color: var(--zc-text-faint); }
+.rail .item .meta .live { color: var(--zc-accent); }
+.rail .item .meta .live.approval { color: var(--zc-warn); }
+.rail .item .meta .live.open { color: var(--zc-text-dim); }
 .rail .foot { padding: 8px; border-top: 1px solid var(--zc-border); }
 
 .center { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
